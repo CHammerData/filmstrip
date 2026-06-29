@@ -1,7 +1,6 @@
 import { ListScraper } from './list';
 import { CollectionsScraper } from './collections';
 import { PopularScraper } from './popular';
-import env from '../util/env';
 
 export interface LetterboxdMovie {
     id: number;
@@ -45,13 +44,23 @@ export const detectListType = (url: string): ListType | null => {
   return null;
 };
 
-export const fetchMoviesFromUrl = async (url: string): Promise<LetterboxdMovie[]> => {
+/**
+ * Fetch movies from any supported Letterboxd URL.
+ *
+ * `take`/`strategy` are passed by the caller (per-list config), replacing the old
+ * env-driven globals. Omit both to scrape the whole list (upstream default).
+ */
+export const fetchMoviesFromUrl = async (
+  url: string,
+  take?: number,
+  strategy?: 'oldest' | 'newest'
+): Promise<LetterboxdMovie[]> => {
   const listType = detectListType(url);
-  
+
   if (!listType) {
     throw new Error(`Unsupported URL format: ${url}`);
   }
-  
+
   switch (listType) {
     case ListType.ACTOR_FILMOGRAPHY:
     case ListType.DIRECTOR_FILMOGRAPHY:
@@ -59,45 +68,17 @@ export const fetchMoviesFromUrl = async (url: string): Promise<LetterboxdMovie[]
     case ListType.WATCHLIST:
     case ListType.REGULAR_LIST:
     case ListType.WATCHED_MOVIES:
-      // Filmography pages, lists, and watched movies use the same HTML structure
-      // Determine take parameters from environment variables
-      let take: number | undefined = undefined;
-      let strategy: 'oldest' | 'newest' | undefined = undefined;
-
-      if (env.LETTERBOXD_TAKE_AMOUNT && env.LETTERBOXD_TAKE_STRATEGY) {
-        take = env.LETTERBOXD_TAKE_AMOUNT;
-        strategy = env.LETTERBOXD_TAKE_STRATEGY;
-      }
-
-      const listScraper = new ListScraper(url, take, strategy);
-      return listScraper.getMovies();
+      // Filmography pages, lists, and watched movies use the same HTML structure.
+      return new ListScraper(url, take, strategy).getMovies();
 
     case ListType.COLLECTIONS:
-      // Collections load movies via AJAX endpoint
-      let collectionTake: number | undefined = undefined;
-      let collectionStrategy: 'oldest' | 'newest' | undefined = undefined;
-
-      if (env.LETTERBOXD_TAKE_AMOUNT && env.LETTERBOXD_TAKE_STRATEGY) {
-        collectionTake = env.LETTERBOXD_TAKE_AMOUNT;
-        collectionStrategy = env.LETTERBOXD_TAKE_STRATEGY;
-      }
-
-      const collectionsScraper = new CollectionsScraper(url, collectionTake, collectionStrategy);
-      return collectionsScraper.getMovies();
+      // Collections load movies via AJAX endpoint.
+      return new CollectionsScraper(url, take, strategy).getMovies();
 
     case ListType.POPULAR_MOVIES:
-      // Popular movies load via AJAX endpoint
-      let popularTake: number | undefined = undefined;
-      let popularStrategy: 'oldest' | 'newest' | undefined = undefined;
+      // Popular movies load via AJAX endpoint.
+      return new PopularScraper(url, take, strategy).getMovies();
 
-      if (env.LETTERBOXD_TAKE_AMOUNT && env.LETTERBOXD_TAKE_STRATEGY) {
-        popularTake = env.LETTERBOXD_TAKE_AMOUNT;
-        popularStrategy = env.LETTERBOXD_TAKE_STRATEGY;
-      }
-
-      const popularScraper = new PopularScraper(url, popularTake, popularStrategy);
-      return popularScraper.getMovies();
-      
     default:
       throw new Error(`Unsupported list type: ${listType}`);
   }

@@ -1,300 +1,168 @@
-# Lettarrboxd
+# Filmstrip
 
-Automatically sync your Letterboxd lists to Radarr for seamless movie management.
+Sync Letterboxd watchlists and lists into [Radarr](https://radarr.video/) — **multi-list,
+multi-user, and managed from one place** instead of one container per list.
 
-## Overview
+> **Filmstrip is a fork** of [ryanpag3/lettarrboxd](https://github.com/ryanpag3/lettarrboxd), which is a
+> headless daemon that syncs a single Letterboxd list per container via environment variables. This
+> fork keeps the upstream's proven scraper + Radarr logic and rebuilds everything around it into a
+> single DB-backed service: many lists, owned by many people, configured in a database (and soon a
+> web GUI) rather than N sets of env vars. It's also a personal learning project.
 
-Lettarrboxd is an application that monitors your Letterboxd lists (watchlists, regular lists, watched movies, filmographies, collections, etc.) and automatically pushes new movies to Radarr. It runs continuously, checking for updates at configurable intervals and only processing new additions to avoid duplicate API calls.
+## How it differs from upstream
+
+| | Upstream | This fork |
+| :-- | :-- | :-- |
+| Lists per deployment | One (per container) | Many (rows in a DB) |
+| Configuration | Environment variables | Database (`Settings` / `User` / `List`), seedable from env |
+| Multiple lists | Run N containers | One service, one scheduler over all enabled lists |
+| Attribution | — | Per-list `User` tag in Radarr, so you can tell whose request a movie was |
+| State / dedup | `movies.json` on disk | `SyncedMovie` rows per list |
+| Interface | Logs only | CLI today; REST API + React GUI on the roadmap |
+| Packaging | One container per list | One container serving the SPA **and** `/api` |
+
+## Status
+
+Early, under active development. Built in milestones:
+
+- ✅ **M1 — DB-backed multi-list core.** SQLite + Prisma schema; per-list config merged over global
+  defaults; a scheduler that syncs every enabled list and records run history; seed + CLI. *(done)*
+- ⬜ **M2 — REST API.** Express CRUD for users/lists/settings; "sync now"; expose run history.
+- ⬜ **M3 — Web GUI.** React + Vite SPA for managing lists/users and viewing sync status.
+- ⬜ **M4 — Users polish.** Per-user views, source-tag automation, enable/disable.
+- ⬜ **M5 — Dockerize + deploy.** Single-container image; deploy to the home lab.
+
+There is **no GUI or Docker image for this fork yet** — drive it via the CLI below. (Upstream's
+single-list Docker image still exists if you want the original behavior.)
+
+## Architecture
+
+- **Backend** — TypeScript/Node. The upstream `src/scraper/*` and `src/api/radarr.ts` modules are
+  reused, parameterized to take per-list options instead of reading globals.
+- **Persistence** — SQLite via [Prisma](https://www.prisma.io/) (Prisma v6). The whole DB is a single
+  file (`prisma/dev.db`), so there's no separate database server to run or back up.
+- **Data model** ([prisma/schema.prisma](./prisma/schema.prisma)):
+  - `Settings` — singleton: the Radarr connection + global defaults (quality profile, root folder,
+    minimum availability, check interval, dry-run).
+  - `User` — a person; carries a Radarr tag for attribution; owns lists.
+  - `List` — a Letterboxd URL owned by a `User`, with per-list overrides that fall back to `Settings`.
+  - `SyncRun` — one row per sync attempt (status + counts + timing) → powers history/health.
+  - `SyncedMovie` — per-list dedup (replaces `movies.json`).
+- **Config resolution** — for each sync, [src/db/config.ts](./src/db/config.ts) merges a list's
+  non-null overrides over `Settings` defaults and assembles the Radarr tag set as
+  `[userTag, "letterboxd", ...extraTags]`.
 
 ## Supported Letterboxd URLs
 
-The application supports various types of Letterboxd URLs for the `LETTERBOXD_URL` environment variable:
+A list's type is detected automatically from its URL. All lists must be **public**.
 
-- **Watchlists**: `https://letterboxd.com/username/watchlist/`
-- **Regular Lists**: `https://letterboxd.com/username/list/list-name/`
-- **Watched Movies**: `https://letterboxd.com/username/films/`
-- **Collections**: `https://letterboxd.com/films/in/collection-name/`
-- **Popular Movies**: `https://letterboxd.com/films/popular/`
-- **Actor Filmography**: `https://letterboxd.com/actor/actor-name/`
-- **Director Filmography**: `https://letterboxd.com/director/director-name/`
-- **Writer Filmography**: `https://letterboxd.com/writer/writer-name/`
-
-### Examples
-```bash
-# User's watchlist
-LETTERBOXD_URL=https://letterboxd.com/moviefan123/watchlist/
-
-# User's custom list
-LETTERBOXD_URL=https://letterboxd.com/dave/list/official-top-250-narrative-feature-films/
-
-# User's watched movies
-LETTERBOXD_URL=https://letterboxd.com/moviefan123/films/
-
-# Movie collection
-LETTERBOXD_URL=https://letterboxd.com/films/in/the-dark-knight-collection/
-
-# Popular movies
-LETTERBOXD_URL=https://letterboxd.com/films/popular/
-
-# Another user's list
-LETTERBOXD_URL=https://letterboxd.com/criterion/list/the-criterion-collection/
-
-# Actor filmography (e.g., Tom Hanks)
-LETTERBOXD_URL=https://letterboxd.com/actor/tom-hanks/
-
-# Director filmography (e.g., Christopher Nolan)
-LETTERBOXD_URL=https://letterboxd.com/director/christopher-nolan/
-
-# Writer filmography (e.g., Aaron Sorkin)
-LETTERBOXD_URL=https://letterboxd.com/writer/aaron-sorkin/
-```
-
-**Note**: All Letterboxd lists must be public for the application to access them.
-
-## Quick Start
-
-### Docker
-
-```bash
-docker run -d \
-  --name lettarrboxd \
-  -e LETTERBOXD_URL=https://letterboxd.com/your_username/watchlist/ \
-  -e RADARR_API_URL=http://your-radarr:7878 \
-  -e RADARR_API_KEY=your_api_key \
-  -e RADARR_QUALITY_PROFILE="HD-1080p" \
-  -e RADARR_TAGS="watchlist,must-watch" \
-  -e DRY_RUN=false \
-  ryanpage/lettarrboxd:latest
-```
-
-For testing purposes, you can enable dry run mode:
-```bash
-docker run -d \
-  --name lettarrboxd-test \
-  -e LETTERBOXD_URL=https://letterboxd.com/your_username/watchlist/ \
-  -e RADARR_API_URL=http://your-radarr:7878 \
-  -e RADARR_API_KEY=your_api_key \
-  -e RADARR_QUALITY_PROFILE="HD-1080p" \
-  -e DRY_RUN=true \
-  ryanpage/lettarrboxd:latest
-```
-See [docker-compose.yaml](./docker-compose.yaml) for complete example.
-
-## Watching Multiple Lists
-
-To monitor multiple Letterboxd lists simultaneously, deploy one lettarrboxd instance per list. Each instance operates independently with its own configuration, allowing you to:
-
-- Watch different lists with different quality profiles
-- Use custom tags to organize movies from different sources
-- Set different check intervals for each list
-- Maintain separate data directories to track each list's state
-
-### Docker Compose Multi-List Example
-
-```yaml
-services:
-  lettarrboxd-watchlist:
-    image: ryanpage/lettarrboxd:latest
-    container_name: lettarrboxd-watchlist
-    environment:
-      - LETTERBOXD_URL=https://letterboxd.com/your_username/watchlist/
-      - RADARR_API_URL=http://radarr:7878
-      - RADARR_API_KEY=your_api_key
-      - RADARR_QUALITY_PROFILE=HD-1080p
-      - RADARR_TAGS=watchlist,personal
-      - CHECK_INTERVAL_MINUTES=60
-    volumes:
-      - ./data/watchlist:/data
-    restart: unless-stopped
-
-  lettarrboxd-criterion:
-    image: ryanpage/lettarrboxd:latest
-    container_name: lettarrboxd-criterion
-    environment:
-      - LETTERBOXD_URL=https://letterboxd.com/criterion/list/the-criterion-collection/
-      - RADARR_API_URL=http://radarr:7878
-      - RADARR_API_KEY=your_api_key
-      - RADARR_QUALITY_PROFILE=HD-1080p
-      - RADARR_TAGS=criterion,classics
-      - CHECK_INTERVAL_MINUTES=120
-    volumes:
-      - ./data/criterion:/data
-    restart: unless-stopped
-
-  lettarrboxd-nolan:
-    image: ryanpage/lettarrboxd:latest
-    container_name: lettarrboxd-nolan
-    environment:
-      - LETTERBOXD_URL=https://letterboxd.com/director/christopher-nolan/
-      - RADARR_API_URL=http://radarr:7878
-      - RADARR_API_KEY=your_api_key
-      - RADARR_QUALITY_PROFILE=Ultra HD
-      - RADARR_TAGS=nolan,director-filmography
-      - CHECK_INTERVAL_MINUTES=1440  # Check once per day
-    volumes:
-      - ./data/nolan:/data
-    restart: unless-stopped
-```
-
-### Docker CLI Multi-List Example
-
-```bash
-# Watch your personal watchlist
-docker run -d \
-  --name lettarrboxd-watchlist \
-  -e LETTERBOXD_URL=https://letterboxd.com/your_username/watchlist/ \
-  -e RADARR_API_URL=http://radarr:7878 \
-  -e RADARR_API_KEY=your_api_key \
-  -e RADARR_QUALITY_PROFILE="HD-1080p" \
-  -e RADARR_TAGS="watchlist,personal" \
-  -e CHECK_INTERVAL_MINUTES=60 \
-  -v ./data/watchlist:/data \
-  ryanpage/lettarrboxd:latest
-
-# Watch the Criterion Collection
-docker run -d \
-  --name lettarrboxd-criterion \
-  -e LETTERBOXD_URL=https://letterboxd.com/criterion/list/the-criterion-collection/ \
-  -e RADARR_API_URL=http://radarr:7878 \
-  -e RADARR_API_KEY=your_api_key \
-  -e RADARR_QUALITY_PROFILE="HD-1080p" \
-  -e RADARR_TAGS="criterion,classics" \
-  -e CHECK_INTERVAL_MINUTES=120 \
-  -v ./data/criterion:/data \
-  ryanpage/lettarrboxd:latest
-
-# Watch Christopher Nolan's filmography
-docker run -d \
-  --name lettarrboxd-nolan \
-  -e LETTERBOXD_URL=https://letterboxd.com/director/christopher-nolan/ \
-  -e RADARR_API_URL=http://radarr:7878 \
-  -e RADARR_API_KEY=your_api_key \
-  -e RADARR_QUALITY_PROFILE="Ultra HD" \
-  -e RADARR_TAGS="nolan,director-filmography" \
-  -e CHECK_INTERVAL_MINUTES=1440 \
-  -v ./data/nolan:/data \
-  ryanpage/lettarrboxd:latest
-```
-
-### Best Practices for Multi-List Setup
-
-1. **Unique Container Names**: Each instance must have a unique container name (e.g., `lettarrboxd-watchlist`, `lettarrboxd-criterion`)
-
-2. **Separate Data Directories**: Use different volume mounts for each instance to maintain independent state tracking:
-   ```yaml
-   volumes:
-     - ./data/watchlist:/data    # Instance 1
-     - ./data/criterion:/data    # Instance 2
-   ```
-
-3. **Distinctive Tags**: Use the `RADARR_TAGS` variable to organize movies by source:
-   ```yaml
-   - RADARR_TAGS=watchlist,personal
-   - RADARR_TAGS=criterion,classics
-   - RADARR_TAGS=nolan,director-filmography
-   ```
-
-4. **Appropriate Check Intervals**: Adjust `CHECK_INTERVAL_MINUTES` based on how frequently each list updates:
-   - Personal watchlists: 30-60 minutes
-   - Curated lists: 2-24 hours
-   - Static collections: 24 hours or more
-
-5. **Quality Profiles**: Each instance can use different quality profiles based on content type:
-   ```yaml
-   - RADARR_QUALITY_PROFILE=HD-1080p      # Standard content
-   - RADARR_QUALITY_PROFILE=Ultra HD       # Premium content
-   ```
-
-## Configuration
-
-### Required Environment Variables
-
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `LETTERBOXD_URL` | Your Letterboxd list URL | `https://letterboxd.com/moviefan123/watchlist/` |
-| `RADARR_API_URL` | Radarr base URL | `http://radarr:7878` |
-| `RADARR_API_KEY` | Radarr API key | `abc123...` |
-| `RADARR_QUALITY_PROFILE` | Quality profile name in Radarr | `HD-1080p` |
-
-### Optional Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CHECK_INTERVAL_MINUTES` | `10` | How often to check for new movies (minimum 10) |
-| `RADARR_MINIMUM_AVAILABILITY` | `released` | When movie becomes available (`announced`, `inCinemas`, `released`) |
-| `RADARR_ROOT_FOLDER_ID` | - | Specific root folder ID to use in Radarr (uses first available if not set) |
-| `RADARR_ADD_UNMONITORED` | `false` | When `true`, adds movies to Radarr in an unmonitored state |
-| `RADARR_TAGS` | - | Additional tags to apply to movies (comma-separated). Movies are always tagged with `letterboxd` |
-| `LETTERBOXD_TAKE_AMOUNT` | - | Number of movies to sync (requires `LETTERBOXD_TAKE_STRATEGY`) |
-| `LETTERBOXD_TAKE_STRATEGY` | - | Movie selection strategy: `newest` or `oldest` (requires `LETTERBOXD_TAKE_AMOUNT`) |
-| `DRY_RUN` | `false` | When `true`, logs what would be added to Radarr without making actual API calls |
-| `DATA_DIR` | `/data` | Directory for storing application data. You generally do not need to worry about this. |
+| Type | URL shape |
+| :-- | :-- |
+| Watchlist | `https://letterboxd.com/username/watchlist/` |
+| Regular list | `https://letterboxd.com/username/list/list-name/` |
+| Watched movies | `https://letterboxd.com/username/films/` |
+| Collection | `https://letterboxd.com/films/in/collection-name/` |
+| Popular | `https://letterboxd.com/films/popular/` |
+| Actor filmography | `https://letterboxd.com/actor/actor-name/` |
+| Director filmography | `https://letterboxd.com/director/director-name/` |
+| Writer filmography | `https://letterboxd.com/writer/writer-name/` |
 
 ## Development
 
 ### Prerequisites
 
-- Node.js 20+
-- Yarn package manager
+- Node.js 20+ (developed on 26)
+- npm (this fork uses npm + `package-lock.json`; upstream's `yarn.lock` was removed)
 
 ### Setup
 
 ```bash
-# Clone the repository
-git clone https://github.com/ryanpag3/lettarrboxd.git
-cd lettarrboxd
+git clone https://github.com/CHammerData/filmstrip.git
+cd filmstrip
+npm install
 
-# Install dependencies
-yarn install
-
-# Create environment file
+# Local config (gitignored). At minimum DATABASE_URL must be set.
 cp .env.example .env
-# Edit .env with your configuration
 
-# Run in development mode
-yarn start:dev
+# Create the SQLite database from migrations + generate the Prisma client.
+npx prisma migrate dev
 ```
 
-### Development Commands
+`.env` for this fork:
 
 ```bash
-yarn start:dev    # Run with auto-reload
-yarn tsc          # Compile TypeScript
-yarn tsc --noEmit # Type check only
+DATABASE_URL="file:./dev.db"   # required by Prisma; resolves to prisma/dev.db
+LOG_LEVEL=info
+NODE_ENV=development
 ```
 
-### Development Mode
+### Seeding (M1: configure via env until the GUI exists)
 
-When `NODE_ENV=development`, the application:
-- Only processes the first 5 movies (for faster testing)
-- Uses more verbose logging
-- Includes additional debug information
+`npm run seed` upserts the `Settings` row, a `User`, and one `List` from environment variables. It's
+idempotent — safe to re-run. `DRY_RUN` defaults to `true` so the first run makes no changes in Radarr.
 
-## Contributing
+```bash
+RADARR_API_URL=http://your-radarr:7878 \
+RADARR_API_KEY=your_api_key \
+RADARR_QUALITY_PROFILE="HD-1080p" \
+LETTERBOXD_URL=https://letterboxd.com/your_username/watchlist/ \
+DRY_RUN=true \
+npm run seed
+```
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+Optional seed vars: `RADARR_MINIMUM_AVAILABILITY`, `SEED_USER_NAME`, `SEED_USER_TAG`, `SEED_LIST_LABEL`.
+
+### CLI
+
+```bash
+npm run cli lists          # list configured lists + last-synced time
+npm run cli sync <listId>  # sync one list now
+npm run cli sync-all       # sync every enabled list now
+npm run cli sync-due       # sync only lists whose interval has elapsed
+```
+
+Movies are tagged in Radarr with the owning user's tag, the global `letterboxd` tag, and any per-list
+extra tags. With `Settings.dryRun = true`, syncs log what *would* be added and write no `SyncedMovie`
+rows (so a later real run still acts on them). A true dry-run still queries Radarr for quality
+profiles / root folders, so it needs a valid Radarr connection.
+
+### Running the scheduler
+
+```bash
+npm run start:dev   # boots the scheduler: ticks every minute, honoring each list's interval
+```
+
+### Tests & typecheck
+
+```bash
+npm test               # all tests (unit + integration)
+npm run test:unit      # unit tests only (no network)
+npm run test:integration   # integration tests (hit live Letterboxd)
+npx tsc --noEmit       # typecheck
+```
+
+### Prisma helpers
+
+```bash
+npm run prisma:migrate    # create/apply a migration in dev
+npm run prisma:studio     # browse the DB in a local GUI
+npm run prisma:generate   # regenerate the client
+```
 
 ## Troubleshooting
 
-### Common Issues
-
-**Movies not being added**
-- Verify your Radarr API key and URL are correct
-- Check that the quality profile name matches exactly (case-sensitive)
-- Ensure your Letterboxd list is public
-
-**Docker container won't start**
-- Verify all required environment variables are set
-- Check container logs: `docker logs lettarrboxd`
+- **"Radarr connection is not configured"** — `Settings.radarrUrl` / `radarrApiKey` are unset. Re-run
+  the seed with `RADARR_API_URL` and `RADARR_API_KEY`.
+- **Quality profile errors** — the name must match Radarr exactly (case-sensitive).
+- **No movies found** — confirm the Letterboxd list is public and the URL matches a supported shape.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT — see [LICENSE](LICENSE). Original work © Ryan Page (upstream); fork modifications © Chris Hammer.
 
-## Legal Disclaimer
+## Legal disclaimer
 
-This project is intended for use with legally sourced media only. It is designed to help users organize and manage their personal media collections. The developers of Lettarrboxd do not condone or support piracy in any form. Users are solely responsible for ensuring their use of this software complies with all applicable laws and regulations in their jurisdiction.
+This project is intended for use with legally sourced media only. It helps users organize and manage
+their personal media collections. The developers do not condone or support piracy in any form. Users
+are solely responsible for ensuring their use of this software complies with all applicable laws and
+regulations in their jurisdiction.

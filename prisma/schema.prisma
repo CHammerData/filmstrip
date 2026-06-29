@@ -1,0 +1,123 @@
+// Lettarrboxd Manager data model.
+// SQLite via Prisma. Note: Prisma does not support native enums on SQLite,
+// so status/strategy fields are Strings with their allowed values documented inline.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// Singleton (id = 1): the Radarr connection + global defaults that Lists fall back to.
+model Settings {
+  id Int @id @default(1)
+
+  // Radarr connection (single instance for now; could become its own model later)
+  radarrUrl    String?
+  radarrApiKey String?
+
+  // Global defaults — a List's null fields inherit these.
+  defaultQualityProfile      String?
+  defaultRootFolderId        String?
+  defaultMinimumAvailability String  @default("released") // announced | inCinemas | released
+  defaultCheckIntervalMin    Int     @default(60)
+  dryRun                     Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// A person whose Letterboxd lists we monitor. Carries a Radarr tag for attribution.
+model User {
+  id   Int    @id @default(autoincrement())
+  name String
+
+  /// Radarr tag applied to everything this user requests (e.g. "chris"). Always
+  /// combined with the global "letterboxd" tag and any per-list extraTags.
+  tag     String
+  enabled Boolean @default(true)
+
+  lists List[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tag])
+}
+
+/// A Letterboxd URL to monitor, owned by a User. Null overrides inherit Settings defaults.
+model List {
+  id     Int  @id @default(autoincrement())
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId Int
+
+  url      String
+  /// Detected at save time: watchlist | regular_list | watched_movies |
+  /// actor_filmography | director_filmography | writer_filmography | collections | popular_movies
+  listType String
+  label    String
+  enabled  Boolean @default(true)
+
+  // Per-list overrides (null => inherit from Settings).
+  qualityProfile      String?
+  rootFolderId        String?
+  minimumAvailability String?
+  monitored           Boolean @default(true)
+  /// Extra Radarr tags beyond the user tag + "letterboxd" (comma-separated).
+  extraTags           String?
+  takeAmount          Int?
+  takeStrategy        String? // oldest | newest
+  checkIntervalMin    Int?
+
+  lastSyncedAt DateTime?
+
+  syncRuns     SyncRun[]
+  syncedMovies SyncedMovie[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, url])
+}
+
+/// One row per sync attempt of a List. Powers the GUI history/health view.
+model SyncRun {
+  id     Int  @id @default(autoincrement())
+  list   List @relation(fields: [listId], references: [id], onDelete: Cascade)
+  listId Int
+
+  status        String // running | success | partial | failed
+  startedAt     DateTime  @default(now())
+  finishedAt    DateTime?
+  moviesFound   Int       @default(0)
+  moviesAdded   Int       @default(0)
+  moviesSkipped Int       @default(0)
+  moviesFailed  Int       @default(0)
+  dryRun        Boolean   @default(false)
+  error         String?
+
+  @@index([listId, startedAt])
+}
+
+/// Dedup tracking per List (replaces movies.json): entries we've already processed.
+model SyncedMovie {
+  id     Int  @id @default(autoincrement())
+  list   List @relation(fields: [listId], references: [id], onDelete: Cascade)
+  listId Int
+
+  letterboxdSlug String
+  title          String
+  year           Int?
+  tmdbId         Int?
+  /// True if it was actually added to Radarr (vs skipped: no TMDB id, already present, etc.).
+  addedToRadarr Boolean @default(false)
+  radarrMovieId Int?
+
+  firstSeenAt DateTime @default(now())
+
+  @@unique([listId, letterboxdSlug])
+  @@index([listId])
+}

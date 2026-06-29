@@ -1,10 +1,13 @@
 name: Docker Build and Push
 
+# DISABLED until M5 (Dockerize + deploy). Manual-only so it never runs on push/PR.
+# TODO(M5): set IMAGE_NAME to the real Docker Hub repo (e.g. <namespace>/filmstrip),
+# add DOCKERHUB_USERNAME/DOCKERHUB_TOKEN secrets, and wire this back into ci.yml.
 on:
-  workflow_call:
+  workflow_dispatch:
 
 env:
-  IMAGE_NAME: ryanpage/lettarrboxd
+  IMAGE_NAME: filmstrip
 
 jobs:
   docker:

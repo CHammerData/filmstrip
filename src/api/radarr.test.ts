@@ -21,19 +21,9 @@ jest.mock('../util/logger', () => ({
   error: jest.fn(),
 }));
 
-// Mock env
-jest.mock('../util/env', () => ({
-  RADARR_API_URL: 'http://localhost:7878',
-  RADARR_API_KEY: 'test-key',
-  RADARR_QUALITY_PROFILE: 'HD-1080p',
-  RADARR_MINIMUM_AVAILABILITY: 'released',
-  RADARR_TAGS: 'tag1,tag2',
-  RADARR_ADD_UNMONITORED: false,
-  DRY_RUN: false,
-}));
-
 // Import after mocking
 import {
+  createRadarrClient,
   getQualityProfileId,
   getRootFolder,
   getRootFolderById,
@@ -41,11 +31,30 @@ import {
   getAllRequiredTagIds,
   addMovie,
   upsertMovies,
+  RadarrUpsertOptions,
 } from './radarr';
+
+// The client the helpers receive. createRadarrClient returns the mocked axios
+// instance, so this is just the mock under a meaningful name.
+const client = createRadarrClient({ url: 'http://localhost:7878', apiKey: 'test-key' });
+
+const baseOptions: RadarrUpsertOptions = {
+  qualityProfile: 'HD-1080p',
+  minimumAvailability: 'released',
+  monitored: true,
+  tags: ['letterboxd'],
+  dryRun: false,
+};
 
 describe('radarr API', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  describe('createRadarrClient', () => {
+    it('returns an axios instance', () => {
+      expect(client).toBe(mockAxiosInstance);
+    });
   });
 
   describe('getQualityProfileId', () => {
@@ -58,7 +67,7 @@ describe('radarr API', () => {
         ],
       });
 
-      const result = await getQualityProfileId('HD-1080p');
+      const result = await getQualityProfileId(client, 'HD-1080p');
 
       expect(result).toBe(2);
       expect(mockAxiosInstance.get).toHaveBeenCalledWith('/api/v3/qualityprofile');
@@ -72,7 +81,7 @@ describe('radarr API', () => {
         ],
       });
 
-      const result = await getQualityProfileId('NonExistent');
+      const result = await getQualityProfileId(client, 'NonExistent');
 
       expect(result).toBeNull();
     });
@@ -80,7 +89,7 @@ describe('radarr API', () => {
     it('should return null on error', async () => {
       mockAxiosInstance.get.mockRejectedValueOnce(new Error('Network error'));
 
-      const result = await getQualityProfileId('HD-1080p');
+      const result = await getQualityProfileId(client, 'HD-1080p');
 
       expect(result).toBeNull();
     });
@@ -95,7 +104,7 @@ describe('radarr API', () => {
         ],
       });
 
-      const result = await getRootFolder();
+      const result = await getRootFolder(client);
 
       expect(result).toBe('/movies');
       expect(mockAxiosInstance.get).toHaveBeenCalledWith('/api/v3/rootfolder');
@@ -106,7 +115,7 @@ describe('radarr API', () => {
         data: [],
       });
 
-      const result = await getRootFolder();
+      const result = await getRootFolder(client);
 
       expect(result).toBeNull();
     });
@@ -114,7 +123,7 @@ describe('radarr API', () => {
     it('should return null on error', async () => {
       mockAxiosInstance.get.mockRejectedValueOnce(new Error('Network error'));
 
-      const result = await getRootFolder();
+      const result = await getRootFolder(client);
 
       expect(result).toBeNull();
     });
@@ -126,7 +135,7 @@ describe('radarr API', () => {
         data: { id: 1, path: '/movies' },
       });
 
-      const result = await getRootFolderById('1');
+      const result = await getRootFolderById(client, '1');
 
       expect(result).toBe('/movies');
       expect(mockAxiosInstance.get).toHaveBeenCalledWith('/api/v3/rootfolder/1');
@@ -137,7 +146,7 @@ describe('radarr API', () => {
         data: null,
       });
 
-      const result = await getRootFolderById('999');
+      const result = await getRootFolderById(client, '999');
 
       expect(result).toBeNull();
     });
@@ -145,7 +154,7 @@ describe('radarr API', () => {
     it('should return null on error', async () => {
       mockAxiosInstance.get.mockRejectedValueOnce(new Error('Network error'));
 
-      const result = await getRootFolderById('1');
+      const result = await getRootFolderById(client, '1');
 
       expect(result).toBeNull();
     });
@@ -160,7 +169,7 @@ describe('radarr API', () => {
         ],
       });
 
-      const result = await getOrCreateTag('letterboxd');
+      const result = await getOrCreateTag(client, 'letterboxd');
 
       expect(result).toBe(1);
       expect(mockAxiosInstance.get).toHaveBeenCalledWith('/api/v3/tag');
@@ -176,7 +185,7 @@ describe('radarr API', () => {
         data: { id: 2, label: 'newtag' },
       });
 
-      const result = await getOrCreateTag('newtag');
+      const result = await getOrCreateTag(client, 'newtag');
 
       expect(result).toBe(2);
       expect(mockAxiosInstance.post).toHaveBeenCalledWith('/api/v3/tag', {
@@ -187,7 +196,7 @@ describe('radarr API', () => {
     it('should return null on error', async () => {
       mockAxiosInstance.get.mockRejectedValueOnce(new Error('Network error'));
 
-      const result = await getOrCreateTag('testtag');
+      const result = await getOrCreateTag(client, 'testtag');
 
       expect(result).toBeNull();
     });
@@ -204,7 +213,7 @@ describe('radarr API', () => {
         .mockResolvedValueOnce({ data: { id: 2, label: 'tag1' } })
         .mockResolvedValueOnce({ data: { id: 3, label: 'tag2' } });
 
-      const result = await getAllRequiredTagIds();
+      const result = await getAllRequiredTagIds(client, ['letterboxd', 'tag1', 'tag2']);
 
       expect(result).toHaveLength(3);
       expect(result).toContain(1);
@@ -222,11 +231,21 @@ describe('radarr API', () => {
         .mockRejectedValueOnce(new Error('Failed to create tag'))
         .mockResolvedValueOnce({ data: { id: 3, label: 'tag2' } });
 
-      const result = await getAllRequiredTagIds();
+      const result = await getAllRequiredTagIds(client, ['letterboxd', 'tag1', 'tag2']);
 
       expect(result).toHaveLength(2);
       expect(result).toContain(1);
       expect(result).toContain(3);
+    });
+
+    it('should dedup and ignore blank tag names', async () => {
+      mockAxiosInstance.get.mockResolvedValue({ data: [] });
+      mockAxiosInstance.post.mockResolvedValueOnce({ data: { id: 1, label: 'letterboxd' } });
+
+      const result = await getAllRequiredTagIds(client, ['letterboxd', 'letterboxd', '  ', '']);
+
+      expect(result).toEqual([1]);
+      expect(mockAxiosInstance.post).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -240,13 +259,23 @@ describe('radarr API', () => {
       publishedYear: 2020,
     };
 
+    const addParams = {
+      qualityProfileId: 2,
+      rootFolderPath: '/movies',
+      tagIds: [1, 2],
+      minimumAvailability: 'released',
+      monitored: true,
+      dryRun: false,
+    };
+
     it('should add movie to Radarr successfully', async () => {
       mockAxiosInstance.post.mockResolvedValueOnce({
-        data: { id: 1, title: 'Test Movie' },
+        data: { id: 99, title: 'Test Movie' },
       });
 
-      await addMovie(mockMovie, 2, '/movies', [1, 2], 'released');
+      const result = await addMovie(client, mockMovie, addParams);
 
+      expect(result).toMatchObject({ status: 'added', radarrMovieId: 99 });
       expect(mockAxiosInstance.post).toHaveBeenCalledWith('/api/v3/movie', {
         title: 'Test Movie',
         qualityProfileId: 2,
@@ -267,20 +296,31 @@ describe('radarr API', () => {
         tmdbId: null,
       };
 
-      await addMovie(movieWithoutTmdb, 2, '/movies', [1], 'released');
+      const result = await addMovie(client, movieWithoutTmdb, addParams);
 
+      expect(result).toMatchObject({ status: 'skipped' });
       expect(mockAxiosInstance.post).not.toHaveBeenCalled();
     });
 
-    it('should handle dry run mode', async () => {
-      // For this test, we can't easily change the env at runtime since it's already loaded
-      // Instead, we'll verify the logic by checking the env mock
-      // This test is more of an integration test that would need env variable changes
-      // For unit testing, we skip this as DRY_RUN is set at module load time
-      expect(true).toBe(true);
+    it('should not call Radarr in dry-run mode', async () => {
+      const result = await addMovie(client, mockMovie, { ...addParams, dryRun: true });
+
+      expect(result).toMatchObject({ status: 'dryRun' });
+      expect(mockAxiosInstance.post).not.toHaveBeenCalled();
     });
 
-    it('should handle movie already exists error', async () => {
+    it('should respect monitored=false', async () => {
+      mockAxiosInstance.post.mockResolvedValueOnce({ data: { id: 1 } });
+
+      await addMovie(client, mockMovie, { ...addParams, monitored: false });
+
+      expect(mockAxiosInstance.post).toHaveBeenCalledWith(
+        '/api/v3/movie',
+        expect.objectContaining({ monitored: false })
+      );
+    });
+
+    it('should treat already-added as skipped', async () => {
       mockAxiosInstance.post.mockRejectedValueOnce({
         response: {
           status: 400,
@@ -288,20 +328,17 @@ describe('radarr API', () => {
         },
       });
 
-      await expect(addMovie(mockMovie, 2, '/movies', [1], 'released')).resolves.toBeUndefined();
+      const result = await addMovie(client, mockMovie, addParams);
+
+      expect(result).toMatchObject({ status: 'skipped' });
     });
 
-    it('should log error for other errors', async () => {
+    it('should report failed for other errors', async () => {
       mockAxiosInstance.post.mockRejectedValueOnce(new Error('Network error'));
 
-      await expect(addMovie(mockMovie, 2, '/movies', [1], 'released')).resolves.toBeUndefined();
-    });
+      const result = await addMovie(client, mockMovie, addParams);
 
-    it('should set monitored to false when RADARR_ADD_UNMONITORED is true', async () => {
-      // For this test, we can't easily change the env at runtime since it's already loaded
-      // This test would need to be an integration test with actual env variable changes
-      // For unit testing, we skip this as RADARR_ADD_UNMONITORED is set at module load time
-      expect(true).toBe(true);
+      expect(result).toMatchObject({ status: 'failed' });
     });
   });
 
@@ -325,7 +362,7 @@ describe('radarr API', () => {
       },
     ];
 
-    it('should process all movies', async () => {
+    it('should process all movies and summarise outcomes', async () => {
       mockAxiosInstance.get
         .mockResolvedValueOnce({
           data: [{ id: 2, name: 'HD-1080p' }],
@@ -339,11 +376,14 @@ describe('radarr API', () => {
 
       mockAxiosInstance.post
         .mockResolvedValueOnce({ data: { id: 1, label: 'letterboxd' } })
-        .mockResolvedValueOnce({ data: { id: 1, title: 'Movie 1' } })
-        .mockResolvedValueOnce({ data: { id: 2, title: 'Movie 2' } });
+        .mockResolvedValueOnce({ data: { id: 10, title: 'Movie 1' } })
+        .mockResolvedValueOnce({ data: { id: 11, title: 'Movie 2' } });
 
-      await upsertMovies(mockMovies);
+      const summary = await upsertMovies(client, mockMovies, baseOptions);
 
+      expect(summary.added).toBe(2);
+      expect(summary.skipped).toBe(0);
+      expect(summary.failed).toBe(0);
       expect(mockAxiosInstance.post).toHaveBeenCalledWith(
         '/api/v3/movie',
         expect.objectContaining({ title: 'Movie 1' })
@@ -359,7 +399,7 @@ describe('radarr API', () => {
         data: [],
       });
 
-      await expect(upsertMovies(mockMovies)).rejects.toThrow(
+      await expect(upsertMovies(client, mockMovies, baseOptions)).rejects.toThrow(
         'Could not get quality profile ID.'
       );
     });
@@ -373,7 +413,9 @@ describe('radarr API', () => {
           data: [],
         });
 
-      await expect(upsertMovies(mockMovies)).rejects.toThrow('Could not get root folder');
+      await expect(upsertMovies(client, mockMovies, baseOptions)).rejects.toThrow(
+        'Could not get root folder'
+      );
     });
   });
 });

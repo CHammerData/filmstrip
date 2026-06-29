@@ -1,13 +1,12 @@
 name: Cleanup Stale Docker Tags
 
+# DISABLED until M5. Manual-only (no cron). Operates on a Docker Hub repo and needs
+# DOCKERHUB_TOKEN — update IMAGE_NAME to our repo before re-enabling.
 on:
-  schedule:
-    # Run daily at 2 AM UTC
-    - cron: '0 2 * * *'
   workflow_dispatch: # Allow manual trigger
 
 env:
-  IMAGE_NAME: ryanpage/lettarrboxd
+  IMAGE_NAME: filmstrip
 
 jobs:
   cleanup:

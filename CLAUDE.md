@@ -1,113 +1,61 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code when working in this repository.
 
 ## Project Overview
 
-Lettarrboxd is a TypeScript Node.js application that automatically syncs Letterboxd watchlist movies to Radarr. It continuously monitors a user's Letterboxd watchlist for new additions and automatically adds them to Radarr for download management.
+**Filmstrip** syncs Letterboxd watchlists/lists into Radarr. It is a fork of
+[ryanpag3/lettarrboxd](https://github.com/ryanpag3/lettarrboxd) (a single-list, env-configured
+daemon) being rebuilt into a **multi-list, multi-user, DB-backed service** managed via CLI today and
+a REST API + React GUI later. See [PLAN.md](./PLAN.md) for the roadmap (M1–M5) and
+[HANDOFF.md](./HANDOFF.md) for current status.
 
 ## Commands
 
-### Development
-- `yarn install` - Install dependencies
-- `yarn start` - Run the application using ts-node
-- `yarn start:dev` - Run with auto-reload during development using nodemon
-- `yarn build` - Compile TypeScript to JavaScript
-- `yarn tsc --noEmit` - Type check without emitting files
+- `npm install` — install deps (this fork uses **npm** + `package-lock.json`; upstream's `yarn.lock`
+  was removed — do not run `yarn`, it would resurrect a competing lockfile)
+- `npx prisma migrate dev` — create/apply migrations + generate the Prisma client (run after clone)
+- `npm run seed` — bootstrap Settings/User/List from env vars (see `.env.example`)
+- `npm run cli <sync-all | sync-due | sync <listId> | lists>` — drive syncs manually
+- `npm run start:dev` — boot the scheduler (1-min tick, honors per-list intervals)
+- `npm run test:unit` — unit tests (no network); `npm run test:integration` hits live Letterboxd
+- `npx tsc --noEmit` — typecheck
 
-### Docker
-- `docker build -t lettarrboxd .` - Build Docker image
-- `docker run -d --env-file .env -v ./data:/data lettarrboxd` - Run container
+## Architecture
 
-## Environment Configuration
+Config lives in **SQLite via Prisma**, not env vars. The data model is in
+[prisma/schema.prisma](./prisma/schema.prisma): `Settings` (singleton: Radarr connection + global
+defaults), `User` (owns lists; carries a Radarr attribution tag), `List` (a Letterboxd URL with
+per-list overrides that fall back to Settings), `SyncRun` (one row per sync attempt), `SyncedMovie`
+(per-list dedup, replaces the old `movies.json`).
 
-The application uses Zod for strict environment variable validation in `src/env.ts`. All environment variables are validated at startup and the application will exit with detailed error messages if validation fails.
+Module layout:
+- **`src/scraper/`** — reused from upstream. `fetchMoviesFromUrl(url, take?, strategy?)` detects the
+  list type and delegates to a per-type scraper. Stateless; takes params, reads no globals.
+- **`src/api/radarr.ts`** — reused/parameterized. `createRadarrClient({url, apiKey})` builds an axios
+  client; `upsertMovies(client, movies, options)` adds movies and returns an `UpsertSummary` of
+  per-movie outcomes. No global/env reads.
+- **`src/db/`** — `client.ts` (PrismaClient singleton) and `config.ts`
+  (`resolveListConfig(list, settings)`: merges overrides over defaults, assembles tags as
+  `[userTag, "letterboxd", ...extraTags]`, throws on missing Radarr connection / quality profile).
+- **`src/scheduler/index.ts`** — `syncList` (scrape → dedup vs `SyncedMovie` → upsert → record a
+  `SyncRun`; dry-run writes no dedup rows; failures are recorded, never thrown), plus `syncListById`,
+  `syncAll`, `syncDue`, and `startScheduler`.
+- **`src/index.ts`** — boots `startScheduler()`. **`src/cli.ts`** / **`src/db/seed.ts`** — operator entry points.
 
-Required variables:
-- `LETTERBOXD_URL` - Letterboxd list URL for scraping (supports watchlists, regular lists, watched movies, filmographies, collections, etc.)
-- `RADARR_API_URL` - Base URL of Radarr instance  
-- `RADARR_API_KEY` - Radarr API key
-- `RADARR_QUALITY_PROFILE` - Quality profile name (case-sensitive)
+## Conventions / gotchas
 
-Key validation rules:
-- `CHECK_INTERVAL_MINUTES` enforces minimum 10 minutes
-- Environment variables are transformed and validated using Zod schemas
-- The app exits early with clear error messages for invalid configuration
+- **Never read config from `process.env` in app logic.** Process-level settings only (DATABASE_URL,
+  LOG_LEVEL, NODE_ENV) come from env; everything else comes from the DB via `resolveListConfig`. (The
+  old strict env singleton was removed — `src/util/logger.ts` reads `process.env.LOG_LEVEL` directly.)
+- The Radarr `"letterboxd"` tag is intentional/global; keep it even though the project is now Filmstrip.
+- Tests mock the Prisma client (`../db/client`), the scraper, and the Radarr module — no real DB or
+  network in unit tests. `prisma generate` must run before typecheck/tests (CI does this).
+- Keep the upstream `src/scraper/*` modules close to upstream so their scraping fixes can be cherry-picked.
+- Prisma is pinned to **v6** on purpose (v7 needs a native driver adapter + ESM; bad fit here).
 
-## Architecture Overview
+## Status
 
-### Core Application Flow
-The application follows a scheduled monitoring pattern:
-1. **Scheduler** (`startScheduledMonitoring`) runs `processWatchlist()` at configured intervals
-2. **Incremental Processing** - Only new movies (not in previous `movies.json`) are processed
-3. **Rate Limiting** - Built-in delays between API calls to respect external services
-4. **Persistent State** - Tracks processed movies in `DATA_DIR/movies.json` to avoid reprocessing
-
-### Module Separation
-- **`src/index.ts`** - Main orchestration, scheduling, and file I/O operations
-- **`src/letterboxd.ts`** - Web scraping and TMDB ID extraction logic
-- **`src/radarr.ts`** - Radarr API integration and movie management
-- **`src/env.ts`** - Environment validation and configuration management
-
-### Key Architectural Patterns
-
-**State Management**: The application maintains state through a `movies.json` file containing:
-```typescript
-interface MoviesData {
-  timestamp: string;
-  queryDate: string; 
-  totalMovies: number;
-  movies: Movie[];
-}
-```
-
-**Error Handling**: Each module handles errors gracefully without crashing the scheduler. Network failures and API errors are logged but don't stop the monitoring process.
-
-**Development Mode**: When `NODE_ENV=development`, the application limits processing to the first 5 movies for faster testing cycles.
-
-**Radarr Integration**: Movies are added with:
-- Specified quality profile from environment
-- "letterboxd-watchlist" tag for organization
-- Automatic monitoring and search enabled
-- Configurable minimum availability settings
-
-### Web Scraping Strategy
-Letterboxd scraping is implemented with:
-- **Multi-page support** - Automatically handles paginated watchlists
-- **TMDB ID extraction** - Visits individual movie pages to extract TMDB identifiers
-- **Rate limiting** - 1 second delays between page requests, 500ms between TMDB extractions
-- **Graceful pagination** - Detects end of pages using CSS selectors
-
-### Function Organization
-The codebase is organized into small, focused functions:
-- `processWatchlist()` - High-level orchestration (19 lines)
-- `addMovieToRadarr(movie)` - Individual movie processing
-- `processNewMovies(movies)` - Batch processing with delays
-- `getAllWatchlistUrls()` - Pagination handling
-- `getTmdbIdFromMoviePage(url)` - TMDB ID extraction
-
-## Development Notes
-
-### TypeScript Configuration
-- Strict mode enabled with comprehensive type checking
-- Uses ts-node for direct TypeScript execution
-- All environment variables are strictly typed through Zod inference
-
-### Docker Multi-Stage Build
-The Dockerfile uses a production-optimized approach:
-- Alpine Linux base for minimal size
-- Non-root user for security
-- Health checks included
-- Multi-architecture support (AMD64/ARM64)
-
-### Rate Limiting Implementation
-Built-in delays prevent overwhelming external services:
-- 1000ms between Letterboxd page requests
-- 1000ms between Radarr API calls  
-- 500ms between TMDB ID extractions
-
-### Error Recovery
-The application is designed to handle transient failures:
-- Individual movie processing failures don't stop the batch
-- Network timeouts are caught and logged
-- Scheduler continues running even if individual checks fail
+M1 (DB-backed multi-list core) is done. There is **no Dockerfile/compose** — they're deferred to M5
+(single-container build, written fresh for the new architecture). Most GitHub workflows are upstream
+leftovers disabled to manual-only; only `ci.yml` (typecheck + unit tests) runs automatically.

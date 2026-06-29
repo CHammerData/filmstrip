@@ -1,19 +1,15 @@
-import pino from 'pino';
-
-jest.mock('./env', () => ({
-  LOG_LEVEL: 'info',
-  NODE_ENV: 'test',
-  LETTERBOXD_URL: 'https://letterboxd.com/user/watchlist',
-  RADARR_API_URL: 'http://localhost:7878',
-  RADARR_API_KEY: 'test-key',
-  RADARR_QUALITY_PROFILE: 'HD-1080p',
-  RADARR_MINIMUM_AVAILABILITY: 'released',
-  CHECK_INTERVAL_MINUTES: 10,
-  DRY_RUN: false,
-  RADARR_ADD_UNMONITORED: false
-}));
-
 describe('logger', () => {
+  const ORIGINAL_LEVEL = process.env.LOG_LEVEL;
+
+  afterEach(() => {
+    if (ORIGINAL_LEVEL === undefined) {
+      delete process.env.LOG_LEVEL;
+    } else {
+      process.env.LOG_LEVEL = ORIGINAL_LEVEL;
+    }
+    jest.resetModules();
+  });
+
   it('should create a pino logger instance', () => {
     const logger = require('./logger').default;
     expect(logger).toBeDefined();
@@ -23,7 +19,16 @@ describe('logger', () => {
     expect(typeof logger.warn).toBe('function');
   });
 
-  it('should use the configured log level from env', () => {
+  it('should use the LOG_LEVEL from the environment', () => {
+    jest.resetModules();
+    process.env.LOG_LEVEL = 'debug';
+    const logger = require('./logger').default;
+    expect(logger.level).toBe('debug');
+  });
+
+  it('should default to info when LOG_LEVEL is unset', () => {
+    jest.resetModules();
+    delete process.env.LOG_LEVEL;
     const logger = require('./logger').default;
     expect(logger.level).toBe('info');
   });

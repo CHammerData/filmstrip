@@ -1,9 +1,7 @@
 name: Scheduled Build and Test
 
+# DISABLED: cron removed so it doesn't run (and fail) nightly. Manual-only for now.
 on:
-  schedule:
-    # Run daily at 2:00 AM UTC
-    - cron: '0 2 * * *'
   workflow_dispatch: # Allow manual triggering
 
 jobs:

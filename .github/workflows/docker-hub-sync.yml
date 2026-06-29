@@ -1,9 +1,8 @@
 name: Sync README to Docker Hub
 
+# DISABLED until M5. Manual-only. The repository below still points at upstream's
+# Docker Hub repo and needs DOCKERHUB_* secrets — update both before re-enabling.
 on:
-  push:
-    branches: [main, master]
-    paths: ['README.md']
   workflow_dispatch:
 
 jobs:

@@ -1,43 +1,69 @@
-# Session handoff — M1 COMPLETE (2026-06-29)
+# Filmstrip — Handoff / Pickup
 
-Branch: `feat/multi-list-gui`. **Nothing committed yet** — first commit should bundle
-PLAN.md, prisma/, package.json/package-lock.json, and all M1 code.
+Start here when resuming (e.g. a fresh Claude chat on another machine).
 
-## M1 delivered: DB-backed multi-list core (no GUI)
-- **103 unit tests pass** (`npm run test:unit`), **`npx tsc --noEmit` clean**.
-- Package manager: **npm** (`package-lock.json`). Upstream `yarn.lock` removed (npm kept rewriting it; one lockfile only).
-- **Prisma v6** (not v7 — v7 needs a native driver adapter + ESM; bad fit for CommonJS/Windows). Migration `20260628182624_init` applied; client generated.
+## What this is
 
-### Files added
-- `prisma/schema.prisma` + `prisma/migrations/` — data model (Settings/User/List/SyncRun/SyncedMovie).
-- `src/db/client.ts` — PrismaClient singleton (memoized on globalThis for dev hot-reload).
-- `src/db/config.ts` — `resolveListConfig(list, settings)`: merges List overrides over Settings defaults, assembles tags `[userTag, "letterboxd", ...extraTags]`, throws on missing Radarr conn / quality profile. Plus `config.test.ts`.
-- `src/scheduler/index.ts` — `syncList` (scrape → dedup vs SyncedMovie → upsert → record SyncRun + SyncedMovie rows; dry-run writes nothing; failures recorded, never thrown), `syncListById`, `syncAll`, `syncDue` (per-list interval honored), `startScheduler` (1-min tick). Plus `index.test.ts`.
-- `src/db/seed.ts` — seeds Settings/User/List from env (`npm run seed`). dry-run defaults true.
-- `src/cli.ts` — `npm run cli <sync-all | sync-due | sync <id> | lists>`.
+**Filmstrip** — a fork of [ryanpag3/lettarrboxd](https://github.com/ryanpag3/lettarrboxd) being
+rebuilt from a single-list env daemon into a multi-list, multi-user, DB-backed service that pushes
+Letterboxd lists into Radarr. A complement to Jellyseerr, not a replacement.
 
-### Files changed
-- `src/scraper/index.ts` — `fetchMoviesFromUrl(url, take?, strategy?)`, env import dropped.
-- `src/api/radarr.ts` — `createRadarrClient({url,apiKey})` factory; `upsertMovies(client, movies, options)` returns an `UpsertSummary` (added/skipped/failed + per-movie results); `addMovie` returns an `AddResult`. No more env reads. `radarr.test.ts` updated to new signatures.
-- `src/util/logger.ts` — reads `process.env.LOG_LEVEL` directly (was importing the strict env singleton, which `process.exit`ed on any entrypoint). `logger.test.ts` rewritten.
-- `src/index.ts` — boots `startScheduler()` instead of the single setInterval. `index.test.ts` rewritten.
-- `.gitignore` — prisma/dev.db, *.sqlite, web/.
-- `.env` (gitignored) — `DATABASE_URL`, `LOG_LEVEL`, `NODE_ENV`.
+- Repo: `CHammerData/filmstrip` · working branch: **`feat/multi-list-gui`** (not `main`).
+- Read these first, in order: **[DESIGN.md](./DESIGN.md)** (data model + feature design),
+  **[PLAN.md](./PLAN.md)** (the roadmap, M1–M7), **[CLAUDE.md](./CLAUDE.md)** (conventions/gotchas).
 
-### Verified (no-secrets smoke test)
-seed → `cli lists` → `cli sync 1` → with no Radarr configured, `resolveListConfig` throws *before*
-scraping, the failure is caught, a `failed` SyncRun is recorded, and `lastSyncedAt` advances. Local
-`dev.db` then reset to a clean schema.
+## Get running on a fresh machine
 
-## Watch-outs / debt
-- **`src/util/env.ts` + `env.test.ts` were deleted** (dead after the DB-config switch; the singleton
-  was a `process.exit(1)` footgun). Config now comes from the DB; process-level settings
-  (DATABASE_URL/LOG_LEVEL/NODE_ENV) are read from `process.env` directly.
-- A **true end-to-end dry-run still queries the real Radarr** (quality profiles / root folders) even
-  though it skips writes — needs the user's Radarr URL + API key in the Settings row. Run:
-  `RADARR_API_URL=... RADARR_API_KEY=... RADARR_QUALITY_PROFILE=... LETTERBOXD_URL=... DRY_RUN=true npm run seed`
-  then `npm run cli sync 1`.
+```bash
+git clone https://github.com/CHammerData/filmstrip.git
+cd filmstrip
+git checkout feat/multi-list-gui
+npm install                 # uses npm + package-lock.json (NOT yarn)
+cp .env.example .env        # has DATABASE_URL="file:./dev.db"
+npx prisma migrate dev      # creates prisma/dev.db + generates the client
+npm run test:unit           # sanity: should be green
+```
 
-## Next: M2 — REST API + scheduler wiring
-Express CRUD for users/lists/settings; manual "sync now" endpoint (wraps `syncListById`); expose
-SyncRun history. Then M3 (React GUI), M4 (users polish), M5 (Dockerize + add to Home_Lab_Setup compose).
+Then optionally seed + drive it (see README for the full env list):
+```bash
+RADARR_API_URL=... RADARR_API_KEY=... RADARR_QUALITY_PROFILE=... \
+LETTERBOXD_URL=... DRY_RUN=true npm run seed
+npm run cli lists
+npm run cli sync <listId>
+```
+
+## Status
+
+- **M1 ✅ done + committed** — DB-backed multi-list core (CLI-driven). Scraper + Radarr modules
+  parameterized; Prisma (v6) schema/migration; DB-driven scheduler; seed + CLI. Unit tests green.
+- Design + roadmap nailed down (DESIGN.md / PLAN.md). Project renamed lettarrboxd → **filmstrip**
+  (package, GitHub repo, local folder, remotes all updated).
+
+## Next task: M2 — normalized films + provenance
+
+Per [PLAN.md](./PLAN.md) / [DESIGN.md §3](./DESIGN.md):
+- Replace the per-list `SyncedMovie` model with a normalized **`Movie`** (unique `tmdbId`) plus a
+  **`ListMovie`** join (membership + presence + per-list `excluded`).
+- Record **`addedByFilmstrip`** on `Movie` (true only when Filmstrip *created* the film in Radarr —
+  `addMovie` returns `added` vs `skipped: already in Radarr`). This is the keystone for safe deletion.
+- Update `src/scheduler/index.ts` dedup/recording to write `Movie`/`ListMovie` instead of `SyncedMovie`.
+- New Prisma migration; update the scheduler tests accordingly.
+
+M3 (reconcile + deletion approval queue) builds directly on this — see DESIGN.md §5–§6.
+
+## Gotchas (also in CLAUDE.md)
+
+- Config comes from the **DB**, not env. Only `DATABASE_URL`/`LOG_LEVEL`/`NODE_ENV` come from
+  `process.env`. (The old strict env singleton was deleted.)
+- **npm only** — don't run `yarn` (it would resurrect a competing lockfile; `yarn.lock` was removed).
+- **Prisma pinned to v6** on purpose (v7 needs a native driver adapter + ESM; bad fit here).
+- The Radarr `"letterboxd"` tag is intentional/global; keep it despite the rename.
+- GitHub workflows: only `ci.yml` (typecheck + unit tests) runs automatically; Docker/scheduled/
+  release ones are disabled to manual-only until M7.
+- Local `dev.db` and `.env` are gitignored — each machine seeds its own.
+
+## Note from the owner
+
+This repo was scaffolded heavily with Claude as a learning project and is **not recommended for use
+yet** — much of M1 is scaffolding/one-shot tweaks to be validated as the real feature set (DESIGN.md)
+gets built out.

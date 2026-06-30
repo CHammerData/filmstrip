@@ -23,17 +23,9 @@ multi-user, and managed from one place** instead of one container per list.
 
 ## Status
 
-Early, under active development. Built in milestones:
-
-- ✅ **M1 — DB-backed multi-list core.** SQLite + Prisma schema; per-list config merged over global
-  defaults; a scheduler that syncs every enabled list and records run history; seed + CLI. *(done)*
-- ⬜ **M2 — REST API.** Express CRUD for users/lists/settings; "sync now"; expose run history.
-- ⬜ **M3 — Web GUI.** React + Vite SPA for managing lists/users and viewing sync status.
-- ⬜ **M4 — Users polish.** Per-user views, source-tag automation, enable/disable.
-- ⬜ **M5 — Dockerize + deploy.** Single-container image; deploy to the home lab.
-
-There is **no GUI or Docker image for this fork yet** — drive it via the CLI below. (Upstream's
-single-list Docker image still exists if you want the original behavior.)
+Early, under active development. **M1 (DB-backed multi-list core) is done** — drive it via the CLI
+below; there's no GUI or Docker image yet. The full milestone roadmap lives in [PLAN.md](./PLAN.md),
+and the target data model + feature design in [DESIGN.md](./DESIGN.md).
 
 ## Architecture
 

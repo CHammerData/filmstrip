@@ -7,8 +7,9 @@ Guidance for Claude Code when working in this repository.
 **Filmstrip** syncs Letterboxd watchlists/lists into Radarr. It is a fork of
 [ryanpag3/lettarrboxd](https://github.com/ryanpag3/lettarrboxd) (a single-list, env-configured
 daemon) being rebuilt into a **multi-list, multi-user, DB-backed service** managed via CLI today and
-a REST API + React GUI later. See [PLAN.md](./PLAN.md) for the roadmap (M1–M5) and
-[HANDOFF.md](./HANDOFF.md) for current status.
+a REST API + React GUI later. See [DESIGN.md](./DESIGN.md) for the target data model + feature
+design (provenance, the keeper-rule, deletion approval, Jellyfin auth), [PLAN.md](./PLAN.md) for the
+roadmap (milestones + sequencing), and [HANDOFF.md](./HANDOFF.md) for session status.
 
 ## Commands
 

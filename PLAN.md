@@ -43,9 +43,11 @@ Letterboxd lists into Radarr — a complement to Jellyseerr, not a replacement.
   sessions; first login auto-provisions a linked User): login, list management + per-list config,
   user management, the deletion-review queue, sync status + history, and a settings/connections
   page. Express serves the built SPA alongside `/api`.
-- **M7 — Dockerize + deploy.** Single-container image (build the SPA, serve it + `/api` from one
-  Node process); add a `filmstrip` service to the Home_Lab_Setup compose (replaces the
-  N-container approach).
+- **M7 — Dockerize + deploy.** ✅ *Done.* Multi-stage `Dockerfile` builds the SPA + backend and
+  runs one Node process that applies migrations (`prisma migrate deploy`) then serves the SPA +
+  `/api`; SQLite lives on a `/config` volume. The `filmstrip` service is added to the
+  Home_Lab_Setup compose (replacing the upstream N-container-per-list approach). Image publishing
+  via `docker.yml` stays manual until Docker Hub secrets/namespace are set.
 
 Per-list toggles land across M3 (deleteFiles) and M4 (unwatchedOnly, removeOnWatch, makeCollection)
 rather than as a milestone of their own; permanence rides with whichever milestone adds list
@@ -53,7 +55,11 @@ deletion.
 
 ## Current status
 
-M1-M6 are complete. Next up is **M7** — package everything into a single container image (build the
-React SPA, serve it plus `/api` from one Node process) and wire a `filmstrip` service into the
-Home_Lab_Setup compose. Per-user list-ownership scoping in the API/GUI (regular users seeing only
-their own lists) is a tracked refinement, deferred out of M6.
+**M1–M7 are complete** — the roadmap as originally scoped is done: a DB-backed, multi-list,
+multi-user service with reconcile/deletion approval, Jellyfin integration, a REST API, a React GUI
+with Jellyfin auth, and a single-container deploy.
+
+Known follow-ups (tracked, not yet built): per-user list-ownership scoping (regular users currently
+see all lists); `List.permanence` + list deletion; Quick Connect login; Letterboxd diary-RSS
+watched signal; building `web/` in CI; and validating the Jellyfin `makeCollection` flow against a
+library with real media.

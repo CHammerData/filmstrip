@@ -158,16 +158,34 @@ npm run cli sync <listId>
 - Design + roadmap nailed down (DESIGN.md / PLAN.md). Project renamed lettarrboxd → **filmstrip**
   (package, GitHub repo, local folder, remotes all updated).
 
-## Next task: M7 — Dockerize + deploy
+- **M7 ✅ done** — Dockerize + deploy. Multi-stage `Dockerfile`: (1) build the `web` SPA, (2) install
+  backend deps + `prisma generate` + `tsc`, (3) slim runtime that copies dist + node_modules +
+  prisma + `web/dist`, applies `prisma migrate deploy` on start, then `node dist/index.js`. SQLite
+  at `file:/config/filmstrip.db` (mount `/config`); `PORT`/`NODE_ENV` set in the image; a Node
+  `fetch` HEALTHCHECK hits `/api/health`. `.dockerignore` added.
+  - **Gotcha (real, hit + fixed):** `prisma generate` must run with **openssl installed in the
+    build stage** — without it Prisma can't detect the OpenSSL version and emits the
+    `debian-openssl-1.1.x` engine, which then fails to load against the openssl-3 runtime (every DB
+    query throws; migrations still succeed since those use the schema engine). Verified the fix:
+    the image bundles `libquery_engine-debian-openssl-3.0.x.so.node` and a DB-backed request works.
+  - Built + ran the image locally against a fresh `/config` volume: migrations apply, SPA serves,
+    `/api` gates (401), DB queries work, no scheduler errors. Cleaned up the test image/volume.
+  - `docker.yml` left manual (`workflow_dispatch`) — enabling pushes needs Docker Hub
+    secrets + a real `IMAGE_NAME` namespace (see its TODO).
+  - The `filmstrip` **compose service** lives in the **Home_Lab_Setup** repo (separate repo), added
+    alongside radarr/jellyfin/etc.
+- Design + roadmap nailed down (DESIGN.md / PLAN.md). Project renamed lettarrboxd → **filmstrip**
+  (package, GitHub repo, local folder, remotes all updated).
 
-Per [PLAN.md](./PLAN.md):
-- Single-container image: build the `web` SPA, then run one Node process serving `web/dist` + `/api`
-  (createApp already serves the SPA when `web/dist` is present, so the Dockerfile just needs to
-  build both and set `NODE_ENV=production`). Run `prisma migrate deploy` on start; persist the
-  SQLite DB on a volume.
-- Add a `filmstrip` service to the Home_Lab_Setup `docker-compose.yml` (replacing the upstream
-  N-container-per-list model), and re-enable/point `docker.yml` at the real image (see its TODO).
-- Consider building `web/` in CI (`ci.yml` doesn't yet) so the SPA is typechecked on PRs.
+## Roadmap complete — possible next steps
+
+M1–M7 (the full initial roadmap) are done. Tracked follow-ups, none started:
+- **Per-user list-ownership scoping** — any authenticated user currently sees/manages all lists; the
+  API/GUI don't filter by owner. Highest-value refinement now that auth exists.
+- `List.permanence` + a list-deletion flow (pins a deleted list's films so they survive).
+- Quick Connect login (DESIGN §9); Letterboxd diary-RSS watched signal (DESIGN §7).
+- Build `web/` in CI so the SPA is typechecked on PRs; validate `makeCollection` against a Jellyfin
+  library with real media (the live test used an empty library).
 
 ## Gotchas (also in CLAUDE.md)
 

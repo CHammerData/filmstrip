@@ -1,0 +1,22 @@
+# Build artifacts + local state — never copy into the image (stages rebuild them).
+node_modules
+dist
+web/node_modules
+web/dist
+
+# Local dev DB + secrets
+.env
+prisma/dev.db
+prisma/dev.db-journal
+
+# VCS / editor / CI
+.git
+.github
+*.md
+.vscode
+
+# Tests (not needed in the image)
+**/*.test.ts
+**/*.itest.ts
+**/*.livetest.ts
+coverage

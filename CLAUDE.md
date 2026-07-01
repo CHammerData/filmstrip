@@ -124,12 +124,17 @@ Module layout:
 
 ## Status
 
-M1 (DB-backed multi-list core), M2 (normalized films + provenance), M3 (reconcile + deletion
-approval), M4 (Jellyfin integration), M5 (REST API), and M6 (React SPA + Jellyfin auth) are done.
-`List.permanence` is intentionally not yet built — it only matters once a list can be deleted, which
-no milestone implements yet; per-user list-ownership scoping is likewise a deferred refinement.
-There is **no Dockerfile/compose** — deferred to M7 (single-container build: `web` SPA + `/api` from
-one Node process). Most GitHub workflows are upstream leftovers disabled to manual-only; `ci.yml`
-(typecheck + unit tests) runs on every push/PR, and `live-api-test.yml` (real Radarr/Jellyfin
-containers) runs on PRs touching the API client files, or manually via `workflow_dispatch`. The
-backend CI does not yet build `web/`.
+M1–M7 (the full initial roadmap) are done: DB-backed multi-list core, normalized films +
+provenance, reconcile + deletion approval, Jellyfin integration, the REST API, the React SPA +
+Jellyfin auth, and the single-container Docker build. The multi-stage `Dockerfile` builds the SPA +
+backend and runs one Node process (migrate deploy → serve SPA + `/api`); SQLite persists on a
+`/config` volume; the `filmstrip` service is wired into the Home_Lab_Setup compose.
+
+Deferred refinements (tracked, not built): per-user list-ownership scoping (any authed user sees all
+lists); `List.permanence` + list deletion; Quick Connect login; Letterboxd diary-RSS watched signal;
+building `web/` in CI; validating `makeCollection` against a real-media Jellyfin library.
+
+GitHub workflows: `ci.yml` (backend typecheck + unit tests) runs on every push/PR; `live-api-test.yml`
+(real Radarr/Jellyfin containers) runs on PRs touching the API client files or via `workflow_dispatch`;
+`docker.yml` builds/pushes the image but stays manual (`workflow_dispatch`) until Docker Hub
+secrets/namespace are set. Neither CI job builds `web/` yet.

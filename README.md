@@ -23,11 +23,11 @@ multi-user, and managed from one place** instead of one container per list.
 
 ## Status
 
-Early, under active development. **M1–M6** are done: DB-backed multi-list core, normalized films +
-provenance, reconcile + deletion approval, Jellyfin integration, the REST API, and a **React web GUI
-with Jellyfin login**. Drive it via the web UI, the CLI, or the `/api` endpoints below; there's no
-Docker image yet (M7). The full milestone roadmap lives in [PLAN.md](./PLAN.md), and the target data
-model + feature design in [DESIGN.md](./DESIGN.md).
+Early, under active development. **M1–M7** (the full initial roadmap) are done: DB-backed multi-list
+core, normalized films + provenance, reconcile + deletion approval, Jellyfin integration, the REST
+API, a **React web GUI with Jellyfin login**, and a **single-container Docker build**. Drive it via
+the web UI, the CLI, or the `/api` endpoints below. The full milestone roadmap lives in
+[PLAN.md](./PLAN.md), and the target data model + feature design in [DESIGN.md](./DESIGN.md).
 
 > **Note:** the Jellyfin client (`src/api/jellyfin.ts`) is verified against a real
 > `lscr.io/linuxserver/jellyfin` instance via `.github/workflows/live-api-test.yml` (see
@@ -227,6 +227,25 @@ npm run prisma:migrate    # create/apply a migration in dev
 npm run prisma:studio     # browse the DB in a local GUI
 npm run prisma:generate   # regenerate the client
 ```
+
+## Docker
+
+The multi-stage [`Dockerfile`](./Dockerfile) builds the SPA and backend, then runs one Node process
+that applies pending migrations (`prisma migrate deploy`) and serves the SPA + `/api` on port 3000.
+The SQLite DB lives at `/config/filmstrip.db` — mount `/config` on a volume to persist it.
+
+```bash
+docker build -t filmstrip .
+docker run -d --name filmstrip -p 3000:3000 \
+  -v filmstrip-config:/config \
+  filmstrip
+# then open http://localhost:3000 and sign in with a Jellyfin account
+```
+
+`DATABASE_URL` defaults to `file:/config/filmstrip.db` and `PORT` to `3000` inside the image; other
+config (Radarr/Jellyfin connections, defaults) is set at runtime via the **Settings** page or the
+`/api/settings` endpoint, not env vars. In the Home Lab this runs as the `filmstrip` service in the
+compose stack (one container, replacing the upstream one-container-per-list model).
 
 ## Troubleshooting
 

@@ -1,8 +1,9 @@
 name: Docker Build and Push
 
-# DISABLED until M5 (Dockerize + deploy). Manual-only so it never runs on push/PR.
-# TODO(M5): set IMAGE_NAME to the real Docker Hub repo (e.g. <namespace>/filmstrip),
-# add DOCKERHUB_USERNAME/DOCKERHUB_TOKEN secrets, and wire this back into ci.yml.
+# The multi-stage Dockerfile (M7) is ready and builds a single image serving the SPA + /api.
+# Kept manual-only (workflow_dispatch) until publishing is wired up:
+# TODO: set IMAGE_NAME to the real Docker Hub repo (e.g. <namespace>/filmstrip), add the
+# DOCKERHUB_USERNAME/DOCKERHUB_TOKEN secrets, then optionally trigger this from ci.yml on release.
 on:
   workflow_dispatch:
 

@@ -1,0 +1,131 @@
+name: Live Radarr/Jellyfin API Test
+
+# Exercises src/api/radarr.ts and src/api/jellyfin.ts against real, throwaway Radarr/Jellyfin
+# containers instead of mocks. This is the only place the Jellyfin client's assumptions (paths,
+# params, auth headers) get checked against a real server -- see CLAUDE.md/HANDOFF.md. Runs
+# manually or when the API clients (or this workflow) change; not on every push, since booting
+# and wizard-configuring two media servers is much slower than the mocked unit suite.
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'src/api/radarr.ts'
+      - 'src/api/jellyfin.ts'
+      - 'src/api/*.livetest.ts'
+      - '.github/workflows/live-api-test.yml'
+
+env:
+  DATABASE_URL: "file:./ci.db"
+  RADARR_TEST_URL: "http://localhost:7878"
+  # Not a real secret -- a throwaway key for a container destroyed at the end of this job.
+  RADARR_TEST_API_KEY: "ci0000000000000000000000000000ff"
+  JELLYFIN_TEST_URL: "http://localhost:8096"
+
+jobs:
+  live-api-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Start Radarr
+        run: |
+          docker run -d --name radarr \
+            -e PUID=1000 -e PGID=1000 -e TZ=Etc/UTC \
+            -e RADARR__AUTH__APIKEY="$RADARR_TEST_API_KEY" \
+            -e RADARR__AUTH__METHOD=None \
+            -p 7878:7878 \
+            lscr.io/linuxserver/radarr:latest
+
+      - name: Start Jellyfin
+        run: |
+          docker run -d --name jellyfin \
+            -e PUID=1000 -e PGID=1000 -e TZ=Etc/UTC \
+            -p 8096:8096 \
+            lscr.io/linuxserver/jellyfin:latest
+
+      - name: Wait for Radarr and configure a root folder
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$RADARR_TEST_URL/ping" || true)
+            [ "$code" = "200" ] && break
+            sleep 2
+          done
+          # A container-internal directory, permissioned via exec -- avoids depending on host
+          # bind-mount permission propagation, which behaves inconsistently across platforms.
+          docker exec radarr mkdir -p /movies
+          docker exec radarr chmod 777 /movies
+          curl -sf -X POST -H "X-Api-Key: $RADARR_TEST_API_KEY" -H "Content-Type: application/json" \
+            -d '{"path":"/movies"}' \
+            "$RADARR_TEST_URL/api/v3/rootfolder"
+
+      - name: Run the Jellyfin startup wizard and mint an API key
+        run: |
+          set -e
+          JF="$JELLYFIN_TEST_URL"
+
+          # /health returns 200 well before the ASP.NET routing table is fully registered;
+          # Startup/* endpoints intermittently 404 in that window. Poll a real Startup route.
+          for i in $(seq 1 40); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$JF/Startup/Configuration" || true)
+            [ "$code" = "200" ] && break
+            sleep 2
+          done
+
+          curl -sf -X POST "$JF/Startup/Configuration" -H "Content-Type: application/json" \
+            -d '{"UICulture":"en-US","MetadataCountryCode":"US","PreferredMetadataLanguage":"en"}'
+          curl -sf -X POST "$JF/Startup/RemoteAccess" -H "Content-Type: application/json" \
+            -d '{"EnableRemoteAccess":false,"EnableAutomaticPortMapping":false}'
+
+          # Empirically, POST /Startup/User 404s unless these GETs precede it -- reproduced
+          # reliably across multiple fresh containers; root cause unconfirmed (undocumented
+          # server-side wizard state), but this exact sequence is 100% reliable.
+          curl -s "$JF/Startup/Configuration" >/dev/null
+          curl -s "$JF/Startup/FirstUser" >/dev/null
+          curl -s "$JF/Startup/User" >/dev/null
+          for i in $(seq 1 10); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$JF/Startup/User" \
+              -H "Content-Type: application/json" \
+              -d '{"Name":"admin","Password":"FilmstripCiTest123!"}')
+            [ "$code" = "204" ] && break
+            sleep 2
+          done
+          [ "$code" = "204" ] || { echo "Startup/User never succeeded (last status $code)"; exit 1; }
+
+          curl -sf -X POST "$JF/Startup/Complete"
+
+          AUTH_HEADER='MediaBrowser Client="filmstrip-ci", Device="ci", DeviceId="filmstrip-ci-1", Version="1.0.0"'
+          ACCESS_TOKEN=$(curl -sf -X POST "$JF/Users/AuthenticateByName" \
+            -H "Content-Type: application/json" \
+            -H "X-Emby-Authorization: $AUTH_HEADER" \
+            -d '{"Username":"admin","Pw":"FilmstripCiTest123!"}' | jq -r '.AccessToken')
+
+          curl -sf -X POST "$JF/Auth/Keys?App=filmstrip-ci" -H "X-Emby-Token: $ACCESS_TOKEN"
+          API_KEY=$(curl -sf "$JF/Auth/Keys" -H "X-Emby-Token: $ACCESS_TOKEN" | jq -r '.Items[0].AccessToken')
+          echo "JELLYFIN_TEST_API_KEY=$API_KEY" >> "$GITHUB_ENV"
+
+      - name: Run live API tests
+        run: npm run test:live
+
+      - name: Tear down containers
+        if: always()
+        run: docker rm -f radarr jellyfin || true

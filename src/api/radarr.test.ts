@@ -2,6 +2,8 @@
 const mockAxiosInstance = {
   get: jest.fn(),
   post: jest.fn(),
+  put: jest.fn(),
+  delete: jest.fn(),
 };
 
 jest.mock('axios', () => {
@@ -31,6 +33,10 @@ import {
   getAllRequiredTagIds,
   addMovie,
   upsertMovies,
+  getMovieById,
+  getAllTags,
+  setMonitored,
+  deleteMovie,
   RadarrUpsertOptions,
 } from './radarr';
 
@@ -416,6 +422,62 @@ describe('radarr API', () => {
       await expect(upsertMovies(client, mockMovies, baseOptions)).rejects.toThrow(
         'Could not get root folder'
       );
+    });
+  });
+
+  describe('getMovieById', () => {
+    it('returns the movie resource', async () => {
+      mockAxiosInstance.get.mockResolvedValueOnce({ data: { id: 500, title: 'A Movie', tags: [1] } });
+
+      const result = await getMovieById(client, 500);
+
+      expect(result).toMatchObject({ id: 500, title: 'A Movie' });
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/api/v3/movie/500');
+    });
+
+    it('returns null on error', async () => {
+      mockAxiosInstance.get.mockRejectedValueOnce(new Error('Network error'));
+
+      const result = await getMovieById(client, 500);
+
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('getAllTags', () => {
+    it('returns the tag list', async () => {
+      mockAxiosInstance.get.mockResolvedValueOnce({ data: [{ id: 1, label: 'letterboxd' }] });
+
+      const result = await getAllTags(client);
+
+      expect(result).toEqual([{ id: 1, label: 'letterboxd' }]);
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/api/v3/tag');
+    });
+  });
+
+  describe('setMonitored', () => {
+    it('PUTs the full movie resource with monitored overridden', async () => {
+      mockAxiosInstance.put.mockResolvedValueOnce({ data: {} });
+      const movie = { id: 500, title: 'A Movie', tmdbId: 1, monitored: true, tags: [] };
+
+      await setMonitored(client, movie, false);
+
+      expect(mockAxiosInstance.put).toHaveBeenCalledWith('/api/v3/movie/500', {
+        ...movie,
+        monitored: false,
+      });
+    });
+  });
+
+  describe('deleteMovie', () => {
+    it('DELETEs with the deleteFiles flag', async () => {
+      mockAxiosInstance.delete.mockResolvedValueOnce({ data: {} });
+
+      await deleteMovie(client, 500, true);
+
+      expect(mockAxiosInstance.delete).toHaveBeenCalledWith('/api/v3/movie/500', {
+        params: { deleteFiles: true, addImportExclusion: false },
+      });
     });
   });
 });

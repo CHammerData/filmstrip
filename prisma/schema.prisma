@@ -19,6 +19,10 @@ model Settings {
   radarrUrl    String?
   radarrApiKey String?
 
+  // Jellyfin connection (single instance for now). Powers watched-state + collections.
+  jellyfinUrl    String?
+  jellyfinApiKey String?
+
   // Global defaults — a List's null fields inherit these.
   defaultQualityProfile      String?
   defaultRootFolderId        String?
@@ -39,6 +43,11 @@ model User {
   /// combined with the global "letterboxd" tag and any per-list extraTags.
   tag     String
   enabled Boolean @default(true)
+
+  /// Letterboxd username (no @) -- scraped at /{username}/films/ for this user's watched set.
+  letterboxdUsername String?
+  /// Jellyfin user id -- this user's playback history for the watched set.
+  jellyfinUserId     String?
 
   lists List[]
 
@@ -71,11 +80,22 @@ model List {
   takeAmount          Int?
   takeStrategy        String? // oldest | newest
   checkIntervalMin    Int?
+  /// On an approved deletion triggered by this list, also delete the file (not just unmonitor).
+  deleteFiles         Boolean @default(true)
+  /// Subtract the owner's watched set (Letterboxd ∪ Jellyfin) at scrape time -- skip re-adding them.
+  unwatchedOnly       Boolean @default(false)
+  /// When the owner watches a film still on this list, queue it for deletion review (doesn't
+  /// require the film to have left the list -- see DESIGN.md §6).
+  removeOnWatch       Boolean @default(false)
+  /// Maintain a Jellyfin collection (BoxSet) mirroring this list's current films.
+  makeCollection         Boolean @default(false)
+  collectionNameOverride String?
 
   lastSyncedAt DateTime?
 
-  syncRuns     SyncRun[]
-  syncedMovies SyncedMovie[]
+  syncRuns         SyncRun[]
+  listMovies       ListMovie[]
+  deletionRequests DeletionRequest[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -102,22 +122,79 @@ model SyncRun {
   @@index([listId, startedAt])
 }
 
-/// Dedup tracking per List (replaces movies.json): entries we've already processed.
-model SyncedMovie {
-  id     Int  @id @default(autoincrement())
-  list   List @relation(fields: [listId], references: [id], onDelete: Cascade)
-  listId Int
+/// A film, normalized across lists by tmdbId. The anchor for provenance (and, later, pinning).
+model Movie {
+  id     Int @id @default(autoincrement())
+  tmdbId Int @unique
 
-  letterboxdSlug String
-  title          String
-  year           Int?
-  tmdbId         Int?
-  /// True if it was actually added to Radarr (vs skipped: no TMDB id, already present, etc.).
-  addedToRadarr Boolean @default(false)
-  radarrMovieId Int?
+  imdbId String?
+  title  String
+  year   Int?
 
-  firstSeenAt DateTime @default(now())
+  /// True only when Filmstrip itself created this movie in Radarr (vs it already existing —
+  /// a Seerr/manual add). The provenance keystone: never touch films this is false for.
+  addedByFilmstrip Boolean @default(false)
+  radarrMovieId    Int?
+  /// Jellyfin library item id, resolved + cached the first time a makeCollection list needs it.
+  jellyfinItemId   String?
 
-  @@unique([listId, letterboxdSlug])
+  /// "Hands off forever" — the keeper-rule will never queue this film for deletion. Set by
+  /// approving Keep on a pending DeletionRequest.
+  pinned Boolean @default(false)
+
+  listMovies       ListMovie[]
+  deletionRequests DeletionRequest[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// List <-> Movie membership (replaces SyncedMovie): is a film still on this list, and what
+/// happened the last time this list tried to add it.
+model ListMovie {
+  id      Int   @id @default(autoincrement())
+  list    List  @relation(fields: [listId], references: [id], onDelete: Cascade)
+  listId  Int
+  movie   Movie @relation(fields: [movieId], references: [id], onDelete: Cascade)
+  movieId Int
+
+  /// Still present as of the last time this list was scraped.
+  presentOnList Boolean @default(true)
+  /// added | skipped | failed -- outcome the last time this list tried to add it.
+  status String
+  /// Never add this film from this list (film-level override).
+  excluded Boolean @default(false)
+
+  firstSeenAt      DateTime  @default(now())
+  lastSeenAt       DateTime  @default(now())
+  removedFromListAt DateTime?
+
+  @@unique([listId, movieId])
   @@index([listId])
+  @@index([movieId])
+}
+
+/// The deletion approval queue (the keeper-rule's output, DESIGN.md §5-§6). A candidate is never
+/// deleted directly — it's marked pending here for a human to approve or keep.
+model DeletionRequest {
+  id      Int   @id @default(autoincrement())
+  movie   Movie @relation(fields: [movieId], references: [id], onDelete: Cascade)
+  movieId Int
+
+  /// left_list | watched -- list_deleted lands once list deletion exists.
+  reason String
+
+  /// The list whose sync caused this film to drop out of contention (informational; the
+  /// keeper-rule itself only cares whether *any* enabled list still wants the film).
+  triggeredByList   List? @relation(fields: [triggeredByListId], references: [id], onDelete: SetNull)
+  triggeredByListId Int?
+
+  /// pending | approved | kept
+  status String @default("pending")
+
+  createdAt  DateTime  @default(now())
+  resolvedAt DateTime?
+
+  @@index([movieId])
+  @@index([status])
 }

@@ -17,15 +17,22 @@ multi-user, and managed from one place** instead of one container per list.
 | Configuration | Environment variables | Database (`Settings` / `User` / `List`), seedable from env |
 | Multiple lists | Run N containers | One service, one scheduler over all enabled lists |
 | Attribution | — | Per-list `User` tag in Radarr, so you can tell whose request a movie was |
-| State / dedup | `movies.json` on disk | `SyncedMovie` rows per list |
+| State / dedup | `movies.json` on disk | Normalized `Movie` + `ListMovie` rows |
 | Interface | Logs only | CLI today; REST API + React GUI on the roadmap |
 | Packaging | One container per list | One container serving the SPA **and** `/api` |
 
 ## Status
 
-Early, under active development. **M1 (DB-backed multi-list core) is done** — drive it via the CLI
-below; there's no GUI or Docker image yet. The full milestone roadmap lives in [PLAN.md](./PLAN.md),
-and the target data model + feature design in [DESIGN.md](./DESIGN.md).
+Early, under active development. **M1 (DB-backed multi-list core)**, **M2 (normalized films +
+provenance)**, **M3 (reconcile + deletion approval)**, and **M4 (Jellyfin integration)** are done —
+drive it via the CLI below; there's no GUI or Docker image yet. The full milestone roadmap lives in
+[PLAN.md](./PLAN.md), and the target data model + feature design in [DESIGN.md](./DESIGN.md).
+
+> **Note:** the Jellyfin client (`src/api/jellyfin.ts`) is verified against a real
+> `lscr.io/linuxserver/jellyfin` instance via `.github/workflows/live-api-test.yml` (see
+> [src/api/jellyfin.livetest.ts](./src/api/jellyfin.livetest.ts)) — but that instance's library is
+> empty (no media files), so wire compatibility is confirmed while real-media collection matching
+> is not exercised end-to-end.
 
 ## Architecture
 
@@ -34,15 +41,33 @@ and the target data model + feature design in [DESIGN.md](./DESIGN.md).
 - **Persistence** — SQLite via [Prisma](https://www.prisma.io/) (Prisma v6). The whole DB is a single
   file (`prisma/dev.db`), so there's no separate database server to run or back up.
 - **Data model** ([prisma/schema.prisma](./prisma/schema.prisma)):
-  - `Settings` — singleton: the Radarr connection + global defaults (quality profile, root folder,
-    minimum availability, check interval, dry-run).
-  - `User` — a person; carries a Radarr tag for attribution; owns lists.
-  - `List` — a Letterboxd URL owned by a `User`, with per-list overrides that fall back to `Settings`.
+  - `Settings` — singleton: the Radarr + Jellyfin connections and global defaults (quality
+    profile, root folder, minimum availability, check interval, dry-run).
+  - `User` — a person; carries a Radarr tag for attribution, owns lists, and optionally a
+    `letterboxdUsername`/`jellyfinUserId` for watched-state.
+  - `List` — a Letterboxd URL owned by a `User`, with per-list overrides that fall back to
+    `Settings`, plus behavior toggles (`deleteFiles`, `unwatchedOnly`, `removeOnWatch`,
+    `makeCollection`/`collectionNameOverride`).
   - `SyncRun` — one row per sync attempt (status + counts + timing) → powers history/health.
-  - `SyncedMovie` — per-list dedup (replaces `movies.json`).
+  - `Movie` — a film normalized across lists by `tmdbId`, carrying the `addedByFilmstrip`
+    provenance flag (true only when Filmstrip itself created it in Radarr), `pinned`, and a cached
+    `jellyfinItemId`.
+  - `ListMovie` — `List` <-> `Movie` join (replaces `movies.json`/`SyncedMovie`): membership,
+    presence, and per-list `excluded`.
+  - `DeletionRequest` — the approval-queue row a removal candidate sits in until a human approves
+    (delete from Radarr) or keeps (pins it) it.
 - **Config resolution** — for each sync, [src/db/config.ts](./src/db/config.ts) merges a list's
   non-null overrides over `Settings` defaults and assembles the Radarr tag set as
   `[userTag, "letterboxd", ...extraTags]`.
+- **Reconcile + the keeper-rule** — [src/reconcile/index.ts](./src/reconcile/index.ts) runs after
+  every sync. A film that's no longer on *any* enabled list (or, with `removeOnWatch`, that the
+  owner has watched while still on the list), that Filmstrip itself added, that isn't pinned, and
+  that carries no foreign Radarr tags is unmonitored and queued as a pending `DeletionRequest` for
+  review — never deleted automatically. See [DESIGN.md §5-§6](./DESIGN.md).
+- **Watched state + collections** — [src/watched/](./src/watched/) unions a user's Letterboxd
+  watched films and Jellyfin playback history; [src/collections/](./src/collections/) mirrors a
+  list's films into a Jellyfin BoxSet when `makeCollection` is on. See
+  [DESIGN.md §7-§8](./DESIGN.md).
 
 ## Supported Letterboxd URLs
 
@@ -88,7 +113,7 @@ LOG_LEVEL=info
 NODE_ENV=development
 ```
 
-### Seeding (M1: configure via env until the GUI exists)
+### Seeding (configure via env until the GUI exists)
 
 `npm run seed` upserts the `Settings` row, a `User`, and one `List` from environment variables. It's
 idempotent — safe to re-run. `DRY_RUN` defaults to `true` so the first run makes no changes in Radarr.
@@ -102,7 +127,12 @@ DRY_RUN=true \
 npm run seed
 ```
 
-Optional seed vars: `RADARR_MINIMUM_AVAILABILITY`, `SEED_USER_NAME`, `SEED_USER_TAG`, `SEED_LIST_LABEL`.
+Optional seed vars: `RADARR_MINIMUM_AVAILABILITY`, `SEED_USER_NAME`, `SEED_USER_TAG`,
+`SEED_LIST_LABEL`, `JELLYFIN_URL`, `JELLYFIN_API_KEY`, `SEED_USER_LETTERBOXD_USERNAME`,
+`SEED_USER_JELLYFIN_USER_ID` (the last four enable watched-state and collections — see
+[DESIGN.md §7-§8](./DESIGN.md)). Behavior toggles like `unwatchedOnly`/`removeOnWatch`/
+`makeCollection` aren't seedable — set them directly on the `List` row (e.g. via
+`npm run prisma:studio`) until the API/GUI lands.
 
 ### CLI
 
@@ -111,12 +141,20 @@ npm run cli lists          # list configured lists + last-synced time
 npm run cli sync <listId>  # sync one list now
 npm run cli sync-all       # sync every enabled list now
 npm run cli sync-due       # sync only lists whose interval has elapsed
+
+npm run cli deletions      # show the pending deletion-review queue
+npm run cli approve <id>   # approve: delete from Radarr (file too, if the list's deleteFiles is on)
+npm run cli keep <id>      # keep: pin the film, it's never queued again
 ```
 
 Movies are tagged in Radarr with the owning user's tag, the global `letterboxd` tag, and any per-list
-extra tags. With `Settings.dryRun = true`, syncs log what *would* be added and write no `SyncedMovie`
-rows (so a later real run still acts on them). A true dry-run still queries Radarr for quality
-profiles / root folders, so it needs a valid Radarr connection.
+extra tags. With `Settings.dryRun = true`, syncs log what *would* be added and write no `Movie`/
+`ListMovie` rows (so a later real run still acts on them) and skip reconcile entirely. A true
+dry-run still queries Radarr for quality profiles / root folders, so it needs a valid Radarr
+connection.
+
+A film that falls off every list it was on is never deleted outright — it's unmonitored in Radarr
+(file kept) and shows up in `npm run cli deletions` for you to approve or keep.
 
 ### Running the scheduler
 
@@ -127,11 +165,20 @@ npm run start:dev   # boots the scheduler: ticks every minute, honoring each lis
 ### Tests & typecheck
 
 ```bash
-npm test               # all tests (unit + integration)
+npm test               # all tests
 npm run test:unit      # unit tests only (no network)
 npm run test:integration   # integration tests (hit live Letterboxd)
+npm run test:live      # exercises the Radarr/Jellyfin clients against real instances
 npx tsc --noEmit       # typecheck
 ```
+
+`test:live` skips cleanly (not a failure) unless `RADARR_TEST_URL`/`RADARR_TEST_API_KEY`/
+`JELLYFIN_TEST_URL`/`JELLYFIN_TEST_API_KEY` are set. To run it locally: start a Radarr container
+with `RADARR__AUTH__APIKEY` set (Radarr accepts its API key via that env var on first boot — no
+config.xml parsing needed) plus a writable root folder, and a Jellyfin container with its
+first-run setup wizard completed (see `.github/workflows/live-api-test.yml` for the exact,
+verified sequence — Jellyfin's wizard has an undocumented quirk where `POST /Startup/User` 404s
+unless a few `GET`s precede it).
 
 ### Prisma helpers
 

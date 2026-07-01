@@ -8,6 +8,8 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
     id: 1,
     radarrUrl: 'http://radarr:7878',
     radarrApiKey: 'key',
+    jellyfinUrl: null,
+    jellyfinApiKey: null,
     defaultQualityProfile: 'HD-1080p',
     defaultRootFolderId: null,
     defaultMinimumAvailability: 'released',
@@ -25,6 +27,8 @@ function makeUser(overrides: Partial<User> = {}): User {
     name: 'Chris',
     tag: 'chris',
     enabled: true,
+    letterboxdUsername: null,
+    jellyfinUserId: null,
     createdAt: now,
     updatedAt: now,
     ...overrides,
@@ -47,6 +51,11 @@ function makeList(overrides: Partial<List> = {}, user: User = makeUser()): ListW
     takeAmount: null,
     takeStrategy: null,
     checkIntervalMin: null,
+    deleteFiles: true,
+    unwatchedOnly: false,
+    removeOnWatch: false,
+    makeCollection: false,
+    collectionNameOverride: null,
     lastSyncedAt: null,
     createdAt: now,
     updatedAt: now,
@@ -114,5 +123,23 @@ describe('resolveListConfig', () => {
     expect(() =>
       resolveListConfig(makeList(), makeSettings({ defaultQualityProfile: null }))
     ).toThrow(/quality profile/);
+  });
+
+  it('defaults collectionName to the list label, and respects an override', () => {
+    expect(resolveListConfig(makeList(), makeSettings()).collectionName).toBe("Chris's watchlist");
+    expect(
+      resolveListConfig(makeList({ collectionNameOverride: 'Horror Picks' }), makeSettings())
+        .collectionName
+    ).toBe('Horror Picks');
+  });
+
+  it('passes through the watched-state and collection toggles', () => {
+    const config = resolveListConfig(
+      makeList({ unwatchedOnly: true, removeOnWatch: true, makeCollection: true }),
+      makeSettings()
+    );
+    expect(config.unwatchedOnly).toBe(true);
+    expect(config.removeOnWatch).toBe(true);
+    expect(config.makeCollection).toBe(true);
   });
 });

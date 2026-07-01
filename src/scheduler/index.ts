@@ -2,6 +2,9 @@ import prisma from '../db/client';
 import { resolveListConfig, ListWithUser } from '../db/config';
 import { fetchMoviesFromUrl, LetterboxdMovie } from '../scraper';
 import { createRadarrClient, upsertMovies, AddResult } from '../api/radarr';
+import { reconcileList, reconcileWatched } from '../reconcile';
+import { getOwnerWatchedTmdbIds } from '../watched';
+import { syncCollection } from '../collections';
 import logger from '../util/logger';
 
 export interface SyncResult {
@@ -15,7 +18,7 @@ export interface SyncResult {
   dryRun: boolean;
 }
 
-/** Should a SyncedMovie row be written for this outcome? */
+/** Should a Movie/ListMovie row be written for this outcome? */
 function shouldRecord(status: AddResult['status']): boolean {
   // 'added' and 'skipped' are terminal (in Radarr, or unfixable like no-tmdbId).
   // 'failed' should be retried next run; 'dryRun' makes no real change.
@@ -23,8 +26,8 @@ function shouldRecord(status: AddResult['status']): boolean {
 }
 
 /**
- * Sync a single list end-to-end: scrape -> dedup against SyncedMovie -> upsert to
- * Radarr -> record a SyncRun (and SyncedMovie rows, unless dry-run). Never throws;
+ * Sync a single list end-to-end: scrape -> dedup against ListMovie -> upsert to
+ * Radarr -> record a SyncRun (and Movie/ListMovie rows, unless dry-run). Never throws;
  * failures are captured on the returned result and the SyncRun row.
  */
 export async function syncList(list: ListWithUser): Promise<SyncResult> {
@@ -41,15 +44,39 @@ export async function syncList(list: ListWithUser): Promise<SyncResult> {
     const config = resolveListConfig(list, settings);
     logger.info(`Syncing list "${config.label}" (${config.url})${config.dryRun ? ' [DRY RUN]' : ''}`);
 
-    const movies = await fetchMoviesFromUrl(config.url, config.take, config.strategy);
+    const scraped = await fetchMoviesFromUrl(config.url, config.take, config.strategy);
 
-    // Dedup: skip entries we've already processed for this list.
-    const seen = await prisma.syncedMovie.findMany({
+    // Watched-state (DESIGN.md §7) is only fetched if a toggle actually needs it — it costs a
+    // full Letterboxd/Jellyfin watched-history read. A failure here degrades to "nothing
+    // watched" rather than failing the sync; it's supplementary to the core Radarr push.
+    let watchedTmdbIds = new Set<number>();
+    if (config.unwatchedOnly || config.removeOnWatch) {
+      try {
+        watchedTmdbIds = await getOwnerWatchedTmdbIds(list.user, settings);
+      } catch (e: any) {
+        logger.error(`Failed to resolve watched state for list id=${list.id}:`, e?.message ?? e);
+      }
+    }
+
+    // unwatchedOnly filters what we attempt to add; it does NOT affect currentTmdbIds below,
+    // since whether a film is still actually on the Letterboxd list is a separate question
+    // from whether this list wants to (re-)add it right now.
+    const movies = config.unwatchedOnly
+      ? scraped.filter((m: LetterboxdMovie) => !m.tmdbId || !watchedTmdbIds.has(parseInt(m.tmdbId)))
+      : scraped;
+    const unwatchedExcluded = scraped.length - movies.length;
+
+    // Dedup: skip movies already recorded against this list (by tmdbId). Movies without a
+    // tmdbId can't be identified across runs, so they're always retried — cheap, since
+    // upsertMovies short-circuits them without calling Radarr.
+    const seen = await prisma.listMovie.findMany({
       where: { listId: list.id },
-      select: { letterboxdSlug: true },
+      select: { movie: { select: { tmdbId: true } } },
     });
-    const seenSlugs = new Set(seen.map((s) => s.letterboxdSlug));
-    const newMovies = movies.filter((m: LetterboxdMovie) => !seenSlugs.has(m.slug));
+    const seenTmdbIds = new Set(seen.map((s) => s.movie.tmdbId));
+    const newMovies = movies.filter(
+      (m: LetterboxdMovie) => !m.tmdbId || !seenTmdbIds.has(parseInt(m.tmdbId))
+    );
     const alreadySynced = movies.length - newMovies.length;
 
     const client = createRadarrClient({ url: config.radarrUrl, apiKey: config.radarrApiKey });
@@ -62,35 +89,73 @@ export async function syncList(list: ListWithUser): Promise<SyncResult> {
       dryRun: config.dryRun,
     });
 
-    // Persist dedup rows (skip in dry-run so the next real run still acts on them).
+    // Persist Movie/ListMovie rows (skip in dry-run so the next real run still acts on them).
+    // Movies without a tmdbId have no stable identity and are never recorded.
     if (!config.dryRun) {
-      const rows = summary.results.filter((r) => shouldRecord(r.status));
+      const rows = summary.results.filter((r) => shouldRecord(r.status) && r.movie.tmdbId);
       await Promise.all(
-        rows.map((r) =>
-          prisma.syncedMovie.create({
-            data: {
-              listId: list.id,
-              letterboxdSlug: r.movie.slug,
+        rows.map(async (r) => {
+          const tmdbId = parseInt(r.movie.tmdbId!);
+          const movie = await prisma.movie.upsert({
+            where: { tmdbId },
+            update: r.radarrMovieId ? { radarrMovieId: r.radarrMovieId } : {},
+            create: {
+              tmdbId,
               title: r.movie.name,
               year: r.movie.publishedYear ?? null,
-              tmdbId: r.movie.tmdbId ? parseInt(r.movie.tmdbId) : null,
-              addedToRadarr: r.status === 'added',
+              addedByFilmstrip: r.status === 'added',
               radarrMovieId: r.radarrMovieId ?? null,
             },
-          })
-        )
+          });
+          await prisma.listMovie.upsert({
+            where: { listId_movieId: { listId: list.id, movieId: movie.id } },
+            update: { presentOnList: true, status: r.status, lastSeenAt: new Date() },
+            create: { listId: list.id, movieId: movie.id, status: r.status },
+          });
+        })
       );
+
+      // Reconcile: anything that fell off this list since the last sync runs through the
+      // keeper-rule (DESIGN.md §5). Based on the raw scrape, not the unwatchedOnly-filtered
+      // set — leaving the list and being filtered out by unwatchedOnly are different things.
+      // Never blocks the sync result on failure.
+      const currentTmdbIds = new Set(
+        scraped.filter((m: LetterboxdMovie) => m.tmdbId).map((m: LetterboxdMovie) => parseInt(m.tmdbId!))
+      );
+      try {
+        await reconcileList(list, currentTmdbIds);
+      } catch (e: any) {
+        logger.error(`Reconcile failed for list id=${list.id}:`, e?.message ?? e);
+      }
+
+      // removeOnWatch: queue review for anything still on this list the owner has now watched.
+      if (config.removeOnWatch && watchedTmdbIds.size > 0) {
+        try {
+          await reconcileWatched(list, watchedTmdbIds);
+        } catch (e: any) {
+          logger.error(`Reconcile (watched) failed for list id=${list.id}:`, e?.message ?? e);
+        }
+      }
+
+      // makeCollection: mirror this list's current films into a Jellyfin collection.
+      if (config.makeCollection) {
+        try {
+          await syncCollection(list, config.collectionName);
+        } catch (e: any) {
+          logger.error(`Collection sync failed for list id=${list.id}:`, e?.message ?? e);
+        }
+      }
     }
 
     const status: SyncResult['status'] = summary.failed > 0 ? 'partial' : 'success';
-    const skipped = summary.skipped + alreadySynced;
+    const skipped = summary.skipped + alreadySynced + unwatchedExcluded;
 
     await prisma.syncRun.update({
       where: { id: run.id },
       data: {
         status,
         finishedAt: new Date(),
-        moviesFound: movies.length,
+        moviesFound: scraped.length,
         moviesAdded: summary.added,
         moviesSkipped: skipped,
         moviesFailed: summary.failed,
@@ -99,14 +164,14 @@ export async function syncList(list: ListWithUser): Promise<SyncResult> {
     await prisma.list.update({ where: { id: list.id }, data: { lastSyncedAt: new Date() } });
 
     logger.info(
-      `List "${config.label}" ${status}: found=${movies.length} added=${summary.added} ` +
+      `List "${config.label}" ${status}: found=${scraped.length} added=${summary.added} ` +
         `skipped=${skipped} failed=${summary.failed}`
     );
 
     return {
       listId: list.id,
       status,
-      found: movies.length,
+      found: scraped.length,
       added: summary.added,
       skipped,
       failed: summary.failed,

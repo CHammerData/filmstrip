@@ -35,10 +35,16 @@ export interface EffectiveListConfig {
   // Global behaviour.
   dryRun: boolean;
   checkIntervalMin: number;
+
+  // Watched-state + Jellyfin behaviour (DESIGN.md §7-§8).
+  unwatchedOnly: boolean;
+  removeOnWatch: boolean;
+  makeCollection: boolean;
+  collectionName: string;
 }
 
 /** Split a comma-separated tag string into trimmed, non-empty parts. */
-function parseExtraTags(extraTags: string | null): string[] {
+export function parseExtraTags(extraTags: string | null): string[] {
   if (!extraTags) return [];
   return extraTags
     .split(',')
@@ -96,5 +102,10 @@ export function resolveListConfig(list: ListWithUser, settings: Settings): Effec
 
     dryRun: settings.dryRun,
     checkIntervalMin: list.checkIntervalMin ?? settings.defaultCheckIntervalMin,
+
+    unwatchedOnly: list.unwatchedOnly,
+    removeOnWatch: list.removeOnWatch,
+    makeCollection: list.makeCollection,
+    collectionName: list.collectionNameOverride ?? list.label,
   };
 }

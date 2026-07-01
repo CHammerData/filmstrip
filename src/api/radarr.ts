@@ -102,6 +102,45 @@ export async function getRootFolder(client: AxiosInstance): Promise<string | nul
     }
 }
 
+/** A Radarr movie resource as returned by /api/v3/movie/{id} (passthrough fields included). */
+export interface RadarrMovieResource {
+    id: number;
+    title: string;
+    tmdbId: number;
+    monitored: boolean;
+    tags: number[];
+    [key: string]: any;
+}
+
+export async function getMovieById(client: AxiosInstance, id: number): Promise<RadarrMovieResource | null> {
+    try {
+        const response = await client.get(`/api/v3/movie/${id}`);
+        return response.data;
+    } catch (error) {
+        logger.error(`Error getting Radarr movie id=${id}:`, error);
+        return null;
+    }
+}
+
+export async function getAllTags(client: AxiosInstance): Promise<{ id: number; label: string }[]> {
+    const response = await client.get('/api/v3/tag');
+    return response.data;
+}
+
+/** Unmonitor (or re-monitor) a movie. Radarr's PUT replaces the whole resource, so the full
+ *  object from getMovieById must be passed in. */
+export async function setMonitored(
+    client: AxiosInstance,
+    movie: RadarrMovieResource,
+    monitored: boolean
+): Promise<void> {
+    await client.put(`/api/v3/movie/${movie.id}`, { ...movie, monitored });
+}
+
+export async function deleteMovie(client: AxiosInstance, id: number, deleteFiles: boolean): Promise<void> {
+    await client.delete(`/api/v3/movie/${id}`, { params: { deleteFiles, addImportExclusion: false } });
+}
+
 export async function getRootFolderById(client: AxiosInstance, id: string) {
     try {
         const response = await client.get(`/api/v3/rootfolder/${id}`);

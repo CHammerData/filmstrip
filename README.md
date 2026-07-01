@@ -18,16 +18,16 @@ multi-user, and managed from one place** instead of one container per list.
 | Multiple lists | Run N containers | One service, one scheduler over all enabled lists |
 | Attribution | — | Per-list `User` tag in Radarr, so you can tell whose request a movie was |
 | State / dedup | `movies.json` on disk | Normalized `Movie` + `ListMovie` rows |
-| Interface | Logs only | CLI + REST API today; React GUI on the roadmap |
+| Interface | Logs only | CLI, REST API, and a React web GUI (Jellyfin login) |
 | Packaging | One container per list | One container serving the SPA **and** `/api` |
 
 ## Status
 
-Early, under active development. **M1 (DB-backed multi-list core)**, **M2 (normalized films +
-provenance)**, **M3 (reconcile + deletion approval)**, **M4 (Jellyfin integration)**, and **M5
-(REST API)** are done — drive it via the CLI or the `/api` endpoints below; there's no GUI or Docker
-image yet. The full milestone roadmap lives in [PLAN.md](./PLAN.md), and the target data model +
-feature design in [DESIGN.md](./DESIGN.md).
+Early, under active development. **M1–M6** are done: DB-backed multi-list core, normalized films +
+provenance, reconcile + deletion approval, Jellyfin integration, the REST API, and a **React web GUI
+with Jellyfin login**. Drive it via the web UI, the CLI, or the `/api` endpoints below; there's no
+Docker image yet (M7). The full milestone roadmap lives in [PLAN.md](./PLAN.md), and the target data
+model + feature design in [DESIGN.md](./DESIGN.md).
 
 > **Note:** the Jellyfin client (`src/api/jellyfin.ts`) is verified against a real
 > `lscr.io/linuxserver/jellyfin` instance via `.github/workflows/live-api-test.yml` (see
@@ -164,15 +164,35 @@ npm run start:dev   # boots the scheduler (ticks every minute, honoring each lis
                     # AND the REST API (Express, PORT env, default 3000)
 ```
 
+### Web GUI
+
+A React + Vite SPA lives in [`web/`](./web/) (its own npm package). Sign in with a **Jellyfin
+account** — the first login auto-provisions a linked Filmstrip user; Jellyfin admins get the
+settings, users, deletion-queue, and global-sync screens. Screens: list management + per-list
+config, users, the deletion-review queue, sync history, and connection settings.
+
+```bash
+cd web
+npm install
+npm run dev        # Vite dev server on :5173, proxies /api to the backend on :3000
+npm run build      # emits web/dist, which the Express server serves in production
+```
+
+In production the backend serves the built SPA: run `npm run build` in `web/`, then
+`npm run start` at the root — the Express server hosts `web/dist` alongside `/api` on the same port.
+
 ### REST API
 
-All routes are served under `/api`. **No authentication yet** — it arrives with the GUI (M6,
-Jellyfin accounts); until then the API assumes a trusted local network. Errors come back as
-`{ "error": "message" }` with an appropriate status (400 validation, 404 missing, 409 conflict).
+All routes are served under `/api`. **Auth (M6):** every route except `GET /api/health` and
+`POST /api/auth/login` requires a session cookie (obtained by logging in with a Jellyfin account);
+settings, user management, the deletion queue, and global sync are admin-only. Errors come back as
+`{ "error": "message" }` with an appropriate status (400 validation, 401 unauthenticated, 403
+forbidden, 404 missing, 409 conflict).
 
 | Method + path | Purpose |
 | :-- | :-- |
-| `GET /api/health` | Liveness check |
+| `GET /api/health` | Liveness check (public) |
+| `POST /api/auth/login` \| `/logout`, `GET /api/auth/me` | Jellyfin login → session cookie; current user |
 | `GET/PATCH /api/settings` | The singleton Radarr/Jellyfin connection + global defaults |
 | `GET/POST /api/users`, `GET/PATCH/DELETE /api/users/:id` | Manage users |
 | `GET/POST /api/lists`, `GET/PATCH/DELETE /api/lists/:id` | Manage lists (type auto-detected from the URL) |

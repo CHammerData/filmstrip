@@ -20,7 +20,11 @@ roadmap (milestones + sequencing), and [HANDOFF.md](./HANDOFF.md) for session st
 - `npm run cli <sync-all | sync-due | sync <listId> | lists | deletions | approve <id> | keep <id>>`
   — drive syncs and the deletion-review queue manually
 - `npm run start:dev` — boot the scheduler (1-min tick, honors per-list intervals) **and** the REST
-  API (Express, routes under `/api`, `PORT` env, default 3000)
+  API (Express, routes under `/api`, `PORT` env, default 3000). If `web/dist` exists it also serves
+  the SPA.
+- **Web GUI** lives in **`web/`** as a separate npm package (React + Vite). `cd web && npm run dev`
+  runs Vite on :5173 with an `/api` proxy to :3000 (dev); `npm run build` emits `web/dist`, which
+  the Express server serves in production. `web/` has its own `package.json`/`node_modules`.
 - `npm run test:unit` — unit tests (no network); `npm run test:integration` hits live Letterboxd;
   `npm run test:live` exercises `src/api/radarr.ts`/`src/api/jellyfin.ts` against real Radarr/
   Jellyfin instances — skips cleanly if `RADARR_TEST_URL`/`JELLYFIN_TEST_URL` etc. aren't set (see
@@ -76,13 +80,21 @@ Module layout:
   through the same internal keeper-rule check, opening a `pending` `DeletionRequest` (and
   unmonitoring in Radarr) for eligible candidates. `approveDeletion(id)`/`keepDeletion(id)` resolve
   a pending request.
-- **`src/server/`** — the REST API (M5). `app.ts` exports `createApp()` (an Express app, no
-  `listen` — so tests drive it via supertest and `src/index.ts` binds the port); `http.ts` holds
-  the `HttpError`/`asyncHandler`/`parseId`/`parseBody` helpers + central error middleware;
-  `routes/*` are one router per resource (`settings`, `users`, `lists`, `deletions`, `syncRuns`,
-  `sync`). Routers are thin — validate with zod, then call prisma or the existing
-  scheduler/reconcile functions. **No auth yet** (arrives with the GUI, M6). Prisma unique/not-found
-  errors (P2002/P2025) are mapped to 409/404.
+- **`src/server/`** — the REST API (M5) + GUI auth (M6). `app.ts` exports `createApp()` (an Express
+  app, no `listen` — so tests drive it via supertest and `src/index.ts` binds the port; it also
+  serves `web/dist` when that build exists, with an Express-5 `/*splat` catch-all for SPA
+  deep-links); `http.ts` holds `HttpError`/`asyncHandler`/`parseId`/`parseBody` + central error
+  middleware; `auth.ts` has `requireAuth`/`requireAdmin` (read the session cookie); `routes/*` are
+  one router per resource (`auth`, `settings`, `users`, `lists`, `deletions`, `syncRuns`, `sync`).
+  Routers are thin — validate with zod, then call prisma or the existing scheduler/reconcile/auth
+  functions. Everything under `/api` needs a session except `/api/health` and `POST /api/auth/login`;
+  settings/users/deletions/global-sync are admin-only. Prisma P2002/P2025 → 409/404.
+- **`src/auth/`** — GUI auth logic (M6): `login()` (Jellyfin `authenticateByName` → find-or-provision
+  a linked `User` → create a `Session`), `validateSession()`, `logout()`. Sessions are DB-backed
+  (`Session` model), opaque token in an httpOnly cookie, 30-day expiry.
+- **`web/`** — the React + Vite SPA (M6). `src/api.ts` (fetch wrapper, `credentials: 'include'`),
+  `src/auth.tsx` (auth context calling `/api/auth/*`), `src/pages/*` (Login, Lists, Users,
+  Deletions, SyncHistory, Settings). Admin-only pages are hidden from non-admins in `App.tsx`.
 - **`src/index.ts`** — boots `startScheduler()` **and** the Express API (`createApp().listen(PORT)`).
   **`src/cli.ts`** / **`src/db/seed.ts`** — operator entry points.
 
@@ -113,10 +125,11 @@ Module layout:
 ## Status
 
 M1 (DB-backed multi-list core), M2 (normalized films + provenance), M3 (reconcile + deletion
-approval), M4 (Jellyfin integration), and M5 (REST API) are done. `List.permanence` is intentionally
-not yet built — it only matters once a list can be deleted, which no milestone implements yet. There
-is **no Dockerfile/compose** — they're deferred to M7 (single-container build serving the SPA +
-`/api`, written fresh for the new architecture). Most GitHub workflows are upstream leftovers
-disabled to manual-only; `ci.yml` (typecheck + unit tests) runs on every push/PR, and
-`live-api-test.yml` (real Radarr/Jellyfin containers) runs on PRs touching the API client files, or
-manually via `workflow_dispatch`.
+approval), M4 (Jellyfin integration), M5 (REST API), and M6 (React SPA + Jellyfin auth) are done.
+`List.permanence` is intentionally not yet built — it only matters once a list can be deleted, which
+no milestone implements yet; per-user list-ownership scoping is likewise a deferred refinement.
+There is **no Dockerfile/compose** — deferred to M7 (single-container build: `web` SPA + `/api` from
+one Node process). Most GitHub workflows are upstream leftovers disabled to manual-only; `ci.yml`
+(typecheck + unit tests) runs on every push/PR, and `live-api-test.yml` (real Radarr/Jellyfin
+containers) runs on PRs touching the API client files, or manually via `workflow_dispatch`. The
+backend CI does not yet build `web/`.

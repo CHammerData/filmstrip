@@ -39,10 +39,13 @@ Letterboxd lists into Radarr — a complement to Jellyseerr, not a replacement.
   users/lists/settings, manual "sync now" (per-list + sync-all/due), deletion-queue endpoints
   (list/approve/keep), and `SyncRun` history — all wrapping the existing scheduler/reconcile
   functions. No auth yet (arrives with the GUI, M6); assumes a trusted local network.
-- **M6 — Web GUI.** React SPA with **Jellyfin auth**: list/user management, per-list config, the
-  deletion-review queue, sync status + history.
-- **M7 — Dockerize + deploy.** Single-container image; add a `filmstrip` service to the
-  Home_Lab_Setup compose (replaces the N-container approach).
+- **M6 — Web GUI.** ✅ *Done.* React + Vite SPA in `web/` with **Jellyfin auth** (DB-backed
+  sessions; first login auto-provisions a linked User): login, list management + per-list config,
+  user management, the deletion-review queue, sync status + history, and a settings/connections
+  page. Express serves the built SPA alongside `/api`.
+- **M7 — Dockerize + deploy.** Single-container image (build the SPA, serve it + `/api` from one
+  Node process); add a `filmstrip` service to the Home_Lab_Setup compose (replaces the
+  N-container approach).
 
 Per-list toggles land across M3 (deleteFiles) and M4 (unwatchedOnly, removeOnWatch, makeCollection)
 rather than as a milestone of their own; permanence rides with whichever milestone adds list
@@ -50,5 +53,7 @@ deletion.
 
 ## Current status
 
-M1-M5 are complete. Next up is **M6** — the React SPA (Jellyfin auth, list/user management,
-per-list config, the deletion-review queue, sync status + history), built on the M5 REST API.
+M1-M6 are complete. Next up is **M7** — package everything into a single container image (build the
+React SPA, serve it plus `/api` from one Node process) and wire a `filmstrip` service into the
+Home_Lab_Setup compose. Per-user list-ownership scoping in the API/GUI (regular users seeing only
+their own lists) is a tracked refinement, deferred out of M6.

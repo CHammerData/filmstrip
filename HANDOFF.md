@@ -130,20 +130,44 @@ npm run cli sync <listId>
   `src/server/app.test.ts` (183 total). No Prisma migration — M5 is wiring, not data model.
   Smoke-tested against the real dev.db: server boots, returns the settings singleton, rejects a bad
   list URL with 400.
+- **M6 ✅ done** — Web GUI + Jellyfin auth. Two decisions were the user's call this session:
+  DB-backed sessions (over stateless JWT) and auto-provisioning a linked User on first login.
+  - **Auth backend** (committed as a separate checkpoint, `e7ab6fb`): `Session` Prisma model
+    (opaque token, isAdmin, 30-day expiry) + `User.jellyfinUserId` made unique;
+    `api/jellyfin.authenticateByName`; `src/auth` (login/validate/logout + tag-deriving
+    provisioning); `src/server/auth.ts` middleware (`requireAuth`/`requireAdmin`) reading an
+    httpOnly cookie; `routes/auth.ts` (`/login`, `/logout`, `/me`). `app.ts` now gates `/api`:
+    all-but-health-and-login need a session; settings/users/deletions/global-sync are admin-only.
+    cookie-parser added.
+  - **SPA** in `web/` — a **separate npm package** (React 18 + Vite 5 + react-router 6), not part
+    of the root `tsconfig`/jest. `src/api.ts` (fetch wrapper, `credentials:'include'`),
+    `src/auth.tsx` (context → `/api/auth/*`), `src/useLoad.ts`, `src/pages/*` (Login, Lists +
+    per-list config incl. the M3/M4 toggles, Users, Deletions, SyncHistory, Settings). Admin pages
+    hidden from non-admins in `App.tsx`. Dark theme in `styles.css`.
+  - **Serving**: `createApp()` serves `web/dist` when present (static + `/*splat` SPA fallback) —
+    Express 5 rejects a bare `'*'` route (path-to-regexp v8), which broke the backend suite once
+    `web/dist` existed; the named splat is the fix. Dev instead uses Vite on :5173 proxying `/api`.
+  - **Migration** `20260701000000_gui_sessions`. Authored via `migrate diff` + `migrate deploy`:
+    `migrate dev` refuses to run non-interactively when a schema change carries a warning (here the
+    new `jellyfinUserId` unique constraint), even with `--create-only`.
+  - Verified: `web` `npm run build` (strict tsc + Vite bundle) is clean; 201 backend tests pass;
+    end-to-end smoke test (real server) — `GET /`+`/lists` serve the SPA, `/api/health` 200,
+    `/api/lists` unauthenticated 401, `/api/nope` 404.
+  - **Deferred**: Quick Connect login; per-user list-ownership scoping (any authed user currently
+    sees all lists — the API/GUI don't filter by owner yet).
 - Design + roadmap nailed down (DESIGN.md / PLAN.md). Project renamed lettarrboxd → **filmstrip**
   (package, GitHub repo, local folder, remotes all updated).
 
-## Next task: M6 — Web GUI
+## Next task: M7 — Dockerize + deploy
 
-Per [PLAN.md](./PLAN.md) / [DESIGN.md §9](./DESIGN.md):
-- React + Vite SPA against the M5 REST API: list/user management, per-list config (the toggles
-  like `unwatchedOnly`/`removeOnWatch`/`makeCollection` that are currently DB-edit-only), the
-  deletion-review queue, and sync status/history.
-- **Jellyfin auth** (DESIGN §9): username/password proxied to Jellyfin `AuthenticateByName` (+
-  optional Quick Connect), Filmstrip issues its own session, `Policy.IsAdministrator` → admin. This
-  adds the auth layer the M5 API deliberately skipped — it will gate the existing `/api` endpoints.
-- Likely needs a small amount of new backend: auth endpoints/middleware on the Express app, and
-  the SPA served by the same server (per the "one container serving SPA + /api" packaging decision).
+Per [PLAN.md](./PLAN.md):
+- Single-container image: build the `web` SPA, then run one Node process serving `web/dist` + `/api`
+  (createApp already serves the SPA when `web/dist` is present, so the Dockerfile just needs to
+  build both and set `NODE_ENV=production`). Run `prisma migrate deploy` on start; persist the
+  SQLite DB on a volume.
+- Add a `filmstrip` service to the Home_Lab_Setup `docker-compose.yml` (replacing the upstream
+  N-container-per-list model), and re-enable/point `docker.yml` at the real image (see its TODO).
+- Consider building `web/` in CI (`ci.yml` doesn't yet) so the SPA is typechecked on PRs.
 
 ## Gotchas (also in CLAUDE.md)
 

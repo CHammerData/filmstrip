@@ -158,25 +158,27 @@ Needed for two features:
 
 Connection lives on `Settings` (single Radarr, single Jellyfin for now).
 
-## 9. Auth (GUI, [planned])
+## 9. Auth (GUI) **[M6 ✅, Quick Connect planned]**
 
 Authenticate against **Jellyfin accounts**, mirroring Jellyseerr — the audience already has them,
 and we need `jellyfinUserId` anyway.
 
-- **Primary: username/password** proxied to Jellyfin `POST /Users/AuthenticateByName`. Fast with a
-  password manager; no Jellyfin passwords stored.
+- **Primary: username/password** proxied to Jellyfin `POST /Users/AuthenticateByName` **[M6 ✅]**.
+  Fast with a password manager; no Jellyfin passwords stored (`src/api/jellyfin.authenticateByName`).
 - **Optional: Quick Connect** — one-time 6-digit code approved from an existing Jellyfin session;
-  no credential handling. Not per-visit.
-- **Sessions:** after either method, Filmstrip issues its own long-lived "remember me" session, so
-  the in/out experience is independent of the login method.
-- **Roles:** Jellyfin's `Policy.IsAdministrator` → Filmstrip admin. Admins see/approve the global
-  deletion queue and all lists; regular users manage their own lists.
+  no credential handling. **[planned]** — not built; username/password is the only method today.
+- **Sessions [M6 ✅]:** on login Filmstrip creates a **DB-backed session** (`Session` model; opaque
+  token in an httpOnly cookie, 30-day expiry, revocable) and — chosen over a stateless JWT so
+  logout/admin can kill a session before it expires. First login **auto-provisions** a Filmstrip
+  `User` linked by `jellyfinUserId` (tag derived from the display name).
+- **Roles [M6 ✅]:** Jellyfin's `Policy.IsAdministrator` → Filmstrip admin, cached on the session.
+  Admins get settings, user management, the deletion queue, and global sync; any authenticated user
+  can manage lists and read sync history. Scoping regular users to *only their own* lists is a
+  tracked refinement, not yet enforced.
 - Identity (Jellyfin) is separate from the **Letterboxd handle**, which each user sets in profile.
 
-Not required until the GUI (M6). `User.jellyfinUserId` already exists and is used by M4's
-watched-state lookups, but purely as a pointer to a Jellyfin user id — no auth flow reads it yet.
-The **M5 REST API ships without auth** and assumes a trusted local network; the auth layer above
-(sessions + `IsAdministrator` roles) lands with the GUI and will gate the same endpoints.
+The middleware (`src/server/auth.ts`) gates everything under `/api` except `/api/health` and
+`POST /api/auth/login`.
 
 ## 10. Open questions / later
 

@@ -1,3 +1,5 @@
+import path from 'path';
+import fs from 'fs';
 import express, { Express, Request, Response, NextFunction } from 'express';
 import cookieParser from 'cookie-parser';
 import { ZodError } from 'zod';
@@ -44,9 +46,28 @@ export function createApp(): Express {
     res.status(404).json({ error: 'Not found.' });
   });
 
+  serveSpa(app);
+
   app.use(errorHandler);
 
   return app;
+}
+
+/**
+ * Serve the built React SPA (web/dist) when it exists: static assets + a catch-all that returns
+ * index.html so client-side routes deep-link. No-op when the build is absent (dev uses Vite's own
+ * server with an /api proxy; tests only hit /api), so createApp stays usable everywhere.
+ */
+function serveSpa(app: Express): void {
+  // dist/server/app.js -> ../../.. -> repo root; also works under ts-node (src/server/app.ts).
+  const webDist = path.resolve(__dirname, '../../web/dist');
+  const indexHtml = path.join(webDist, 'index.html');
+  if (!fs.existsSync(indexHtml)) return;
+
+  app.use(express.static(webDist));
+  // Express 5 / path-to-regexp v8 rejects a bare '*'; use a named catch-all splat.
+  app.get('/*splat', (_req, res) => res.sendFile(indexHtml));
+  logger.info(`Serving web UI from ${webDist}`);
 }
 
 // Central error middleware: HttpError -> its status; zod parse escapes -> 400; else 500.

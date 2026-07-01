@@ -188,7 +188,9 @@ The middleware (`src/server/auth.ts`) gates everything under `/api` except `/api
 - RSS-based scraping where Letterboxd offers it (more robust than HTML).
 - Per-list grace-period auto-approval (§6).
 
-## 11. Build order
+## 11. Status
 
-The roadmap — milestones and sequencing — lives in **[PLAN.md](./PLAN.md)** (single source of
-truth). This doc owns the *what/how*; PLAN.md owns the *when*.
+The initial build-out (multi-list core → normalized films/provenance → reconcile + deletion
+approval → Jellyfin integration → REST API → React GUI + auth → single-container Docker build) is
+complete. This doc owns the *what/how*; **[CLAUDE.md](./CLAUDE.md)** tracks current status,
+conventions, and the remaining follow-ups.

@@ -6,10 +6,23 @@ Guidance for Claude Code when working in this repository.
 
 **Filmstrip** syncs Letterboxd watchlists/lists into Radarr. It is a fork of
 [ryanpag3/lettarrboxd](https://github.com/ryanpag3/lettarrboxd) (a single-list, env-configured
-daemon) being rebuilt into a **multi-list, multi-user, DB-backed service** managed via CLI today and
-a REST API + React GUI later. See [DESIGN.md](./DESIGN.md) for the target data model + feature
-design (provenance, the keeper-rule, deletion approval, Jellyfin auth), [PLAN.md](./PLAN.md) for the
-roadmap (milestones + sequencing), and [HANDOFF.md](./HANDOFF.md) for session status.
+daemon) rebuilt into a **multi-list, multi-user, DB-backed service** with a CLI, a REST API, and a
+React GUI. See [DESIGN.md](./DESIGN.md) for the data model + feature design (provenance, the
+keeper-rule, deletion approval, Jellyfin auth); this file is the working reference for the code
+layout, conventions, and current status.
+
+## Key decisions
+
+| Area | Choice | Why |
+| :--- | :--- | :--- |
+| Base | True fork of upstream | Keep attribution + cherry-pick upstream scraper/Radarr fixes |
+| Backend | TypeScript/Node → Express API + scheduler | Reuse the working `src/scraper` + `src/api/radarr` modules |
+| Frontend | React + Vite SPA | Clean split from the API |
+| Persistence | SQLite + Prisma (v6) | Typed schema + migrations; single-file DB fits one container |
+| Packaging | One container: Express serves the SPA **and** `/api` | Collapses the upstream "N containers for N lists" model |
+| Provenance | Only ever touch films Filmstrip added (`addedByFilmstrip`) | Never clobber Seerr/manual adds — see [DESIGN.md §2](./DESIGN.md) |
+| Removal | Delete-by-default, behind a human **approval queue** | Avoid hoarding without risking accidental loss — [DESIGN.md §6](./DESIGN.md) |
+| Identity/auth | Jellyfin accounts (username/password today; Quick Connect planned) | Audience already has them; complements Seerr — [DESIGN.md §9](./DESIGN.md) |
 
 ## Commands
 
@@ -128,7 +141,8 @@ M1–M7 (the full initial roadmap) are done: DB-backed multi-list core, normaliz
 provenance, reconcile + deletion approval, Jellyfin integration, the REST API, the React SPA +
 Jellyfin auth, and the single-container Docker build. The multi-stage `Dockerfile` builds the SPA +
 backend and runs one Node process (migrate deploy → serve SPA + `/api`); SQLite persists on a
-`/config` volume; the `filmstrip` service is wired into the Home_Lab_Setup compose.
+`/config` volume. Deploying it as a `filmstrip` service in the separate **Home_Lab_Setup** compose
+repo is intended but **not yet done** (deliberately on hold).
 
 Deferred refinements (tracked, not built): per-user list-ownership scoping (any authed user sees all
 lists); `List.permanence` + list deletion; Quick Connect login; Letterboxd diary-RSS watched signal;

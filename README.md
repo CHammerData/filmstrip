@@ -23,11 +23,12 @@ multi-user, and managed from one place** instead of one container per list.
 
 ## Status
 
-Early, under active development. **M1–M7** (the full initial roadmap) are done: DB-backed multi-list
-core, normalized films + provenance, reconcile + deletion approval, Jellyfin integration, the REST
-API, a **React web GUI with Jellyfin login**, and a **single-container Docker build**. Drive it via
-the web UI, the CLI, or the `/api` endpoints below. The full milestone roadmap lives in
-[PLAN.md](./PLAN.md), and the target data model + feature design in [DESIGN.md](./DESIGN.md).
+Early, under active development. The initial roadmap is complete: DB-backed multi-list core,
+normalized films + provenance, reconcile + deletion approval, Jellyfin integration, the REST API, a
+**React web GUI with Jellyfin login**, and a **single-container Docker build**. Drive it via the web
+UI, the CLI, or the `/api` endpoints below. The target data model + feature design lives in
+[DESIGN.md](./DESIGN.md); [CLAUDE.md](./CLAUDE.md) covers the code layout, conventions, and the
+current status + tracked follow-ups.
 
 > **Note:** the Jellyfin client (`src/api/jellyfin.ts`) is verified against a real
 > `lscr.io/linuxserver/jellyfin` instance via `.github/workflows/live-api-test.yml` (see

@@ -2,7 +2,7 @@ name: Live Radarr/Jellyfin API Test
 
 # Exercises src/api/radarr.ts and src/api/jellyfin.ts against real, throwaway Radarr/Jellyfin
 # containers instead of mocks. This is the only place the Jellyfin client's assumptions (paths,
-# params, auth headers) get checked against a real server -- see CLAUDE.md/HANDOFF.md. Runs
+# params, auth headers) get checked against a real server -- see CLAUDE.md. Runs
 # manually or when the API clients (or this workflow) change; not on every push, since booting
 # and wizard-configuring two media servers is much slower than the mocked unit suite.
 on:

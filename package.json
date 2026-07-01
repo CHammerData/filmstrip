@@ -30,6 +30,7 @@
     "axios": "^1.10.0",
     "bluebird": "^3.7.2",
     "cheerio": "^1.1.0",
+    "cookie-parser": "^1.4.7",
     "dotenv": "^17.2.0",
     "nodemon": "^3.1.10",
     "pino": "^9.7.0",
@@ -40,6 +41,7 @@
   },
   "devDependencies": {
     "@types/bluebird": "^3.5.42",
+    "@types/cookie-parser": "^1.4.10",
     "@types/express": "^5.0.3",
     "@types/jest": "^30.0.0",
     "@types/node": "^24.0.15",

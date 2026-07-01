@@ -25,6 +25,7 @@ import {
   getCollectionItemIds,
   addToCollection,
   removeFromCollection,
+  authenticateByName,
 } from './jellyfin';
 
 const client = createJellyfinClient({ url: 'http://localhost:8096', apiKey: 'test-key' });
@@ -32,6 +33,38 @@ const client = createJellyfinClient({ url: 'http://localhost:8096', apiKey: 'tes
 describe('jellyfin API', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  describe('authenticateByName', () => {
+    it('returns the user identity on success', async () => {
+      mockAxiosInstance.post.mockResolvedValueOnce({
+        data: { User: { Id: 'jf-1', Name: 'Chris', Policy: { IsAdministrator: true } }, AccessToken: 'tok' },
+      });
+
+      const identity = await authenticateByName('http://localhost:8096', 'chris', 'pw');
+
+      expect(identity).toEqual({ jellyfinUserId: 'jf-1', name: 'Chris', isAdmin: true });
+      expect(mockAxiosInstance.post).toHaveBeenCalledWith('/Users/AuthenticateByName', {
+        Username: 'chris',
+        Pw: 'pw',
+      });
+    });
+
+    it('defaults isAdmin to false when Policy is absent', async () => {
+      mockAxiosInstance.post.mockResolvedValueOnce({ data: { User: { Id: 'jf-2', Name: 'Sam' } } });
+      const identity = await authenticateByName('http://localhost:8096', 'sam', 'pw');
+      expect(identity.isAdmin).toBe(false);
+    });
+
+    it('throws when no user comes back', async () => {
+      mockAxiosInstance.post.mockResolvedValueOnce({ data: {} });
+      await expect(authenticateByName('http://localhost:8096', 'x', 'y')).rejects.toThrow(/no user/i);
+    });
+
+    it('propagates an auth failure', async () => {
+      mockAxiosInstance.post.mockRejectedValueOnce(new Error('Request failed with status code 401'));
+      await expect(authenticateByName('http://localhost:8096', 'x', 'bad')).rejects.toThrow();
+    });
   });
 
   describe('getWatchedTmdbIds', () => {

@@ -17,6 +17,44 @@ export function createJellyfinClient(conn: JellyfinConnection): AxiosInstance {
   });
 }
 
+/** The identity Jellyfin returns for an authenticated user (subset we care about). */
+export interface JellyfinIdentity {
+  jellyfinUserId: string;
+  name: string;
+  isAdmin: boolean;
+}
+
+/**
+ * Authenticate a username/password against Jellyfin (POST /Users/AuthenticateByName). Used by the
+ * GUI login flow -- no server API key needed, just the connection URL. Returns the user's Jellyfin
+ * id, display name, and admin flag; throws on bad credentials or an unreachable server.
+ */
+export async function authenticateByName(
+  url: string,
+  username: string,
+  password: string
+): Promise<JellyfinIdentity> {
+  const client = Axios.create({
+    baseURL: url,
+    headers: {
+      // Jellyfin requires this header on AuthenticateByName; the field values are arbitrary labels.
+      'X-Emby-Authorization':
+        'MediaBrowser Client="Filmstrip", Device="Filmstrip Server", DeviceId="filmstrip-server", Version="1.0.0"',
+    },
+  });
+
+  const response = await client.post('/Users/AuthenticateByName', { Username: username, Pw: password });
+  const user = response.data?.User;
+  if (!user?.Id) {
+    throw new Error('Jellyfin authentication returned no user.');
+  }
+  return {
+    jellyfinUserId: user.Id,
+    name: user.Name,
+    isAdmin: !!user.Policy?.IsAdministrator,
+  };
+}
+
 interface JellyfinItem {
   Id: string;
   Name: string;

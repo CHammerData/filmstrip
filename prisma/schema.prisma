@@ -46,15 +46,36 @@ model User {
 
   /// Letterboxd username (no @) -- scraped at /{username}/films/ for this user's watched set.
   letterboxdUsername String?
-  /// Jellyfin user id -- this user's playback history for the watched set.
-  jellyfinUserId     String?
+  /// Jellyfin user id -- this user's playback history for the watched set + GUI auth link.
+  jellyfinUserId     String? @unique
 
-  lists List[]
+  lists    List[]
+  sessions Session[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@unique([tag])
+}
+
+/// A logged-in GUI session (M6). Created on a successful Jellyfin login; the opaque `token`
+/// lives in an httpOnly cookie and is looked up here on each request. Server-side so it can be
+/// revoked (logout / admin) before it expires.
+model Session {
+  id    Int    @id @default(autoincrement())
+  token String @unique
+
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId Int
+
+  /// Cached from Jellyfin's Policy.IsAdministrator at login time -- what the middleware checks.
+  isAdmin Boolean @default(false)
+
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+  expiresAt  DateTime
+
+  @@index([userId])
 }
 
 /// A Letterboxd URL to monitor, owned by a User. Null overrides inherit Settings defaults.

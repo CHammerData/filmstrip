@@ -1,7 +1,10 @@
 import express, { Express, Request, Response, NextFunction } from 'express';
+import cookieParser from 'cookie-parser';
 import { ZodError } from 'zod';
 import logger from '../util/logger';
 import { HttpError } from './http';
+import { requireAuth, requireAdmin } from './auth';
+import { authRouter } from './routes/auth';
 import { settingsRouter } from './routes/settings';
 import { usersRouter } from './routes/users';
 import { listsRouter } from './routes/lists';
@@ -11,23 +14,30 @@ import { syncRouter } from './routes/sync';
 
 /**
  * Build the Express app (no listen) so tests can drive it via supertest and src/index.ts can
- * bind a port. All routes live under /api. Auth is intentionally absent -- it arrives with the
- * GUI (M6, Jellyfin accounts); until then the API assumes a trusted local network.
+ * bind a port. All routes live under /api.
+ *
+ * Auth (M6): a Jellyfin login mints a DB-backed session cookie. Everything except /api/health and
+ * POST /api/auth/login requires a session (requireAuth). Connection config, user management, the
+ * deletion queue, and global sync are admin-only (requireAdmin); any authenticated user can manage
+ * lists and read sync history. Per-user list ownership scoping is a later refinement.
  */
 export function createApp(): Express {
   const app = express();
   app.use(express.json());
+  app.use(cookieParser());
 
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok' });
   });
 
-  app.use('/api/settings', settingsRouter());
-  app.use('/api/users', usersRouter());
-  app.use('/api/lists', listsRouter());
-  app.use('/api/deletions', deletionsRouter());
-  app.use('/api/sync-runs', syncRunsRouter());
-  app.use('/api/sync', syncRouter());
+  app.use('/api/auth', authRouter());
+
+  app.use('/api/settings', requireAuth, requireAdmin, settingsRouter());
+  app.use('/api/users', requireAuth, requireAdmin, usersRouter());
+  app.use('/api/lists', requireAuth, listsRouter());
+  app.use('/api/deletions', requireAuth, requireAdmin, deletionsRouter());
+  app.use('/api/sync-runs', requireAuth, syncRunsRouter());
+  app.use('/api/sync', requireAuth, requireAdmin, syncRouter());
 
   // Unknown /api route -> 404 JSON (rather than Express's default HTML).
   app.use('/api', (_req, res) => {

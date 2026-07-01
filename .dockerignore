@@ -9,11 +9,13 @@ web/dist
 prisma/dev.db
 prisma/dev.db-journal
 
-# VCS / editor / CI
+# VCS / editor / CI / local tooling
 .git
 .github
 *.md
 .vscode
+docker-compose*.yml
+scripts
 
 # Tests (not needed in the image)
 **/*.test.ts

@@ -248,6 +248,32 @@ config (Radarr/Jellyfin connections, defaults) is set at runtime via the **Setti
 `/api/settings` endpoint, not env vars. In the Home Lab this runs as the `filmstrip` service in the
 compose stack (one container, replacing the upstream one-container-per-list model).
 
+### Local dev stack (filmstrip + Jellyfin + Radarr)
+
+To click through the real UI, [`docker-compose.dev.yml`](./docker-compose.dev.yml) brings up
+filmstrip (built from source) alongside **throwaway Jellyfin and Radarr** containers, wired together.
+This is for local development only — **not** the production deployment.
+
+```bash
+docker compose -f docker-compose.dev.yml up -d --build
+bash scripts/dev-setup.sh          # Windows: run in Git Bash
+# open http://localhost:3000  →  log in with  admin / DemoPass123!
+```
+
+`scripts/dev-setup.sh` does the two imperative steps compose can't: it completes Jellyfin's
+first-run wizard (creating the `admin` user) and seeds filmstrip's Settings (pointed at the compose
+Jellyfin + Radarr) plus a demo list. It's **idempotent** — safe to re-run. Login lands you as a
+Jellyfin admin, so every screen is available. Dry-run is seeded **on** (no real Radarr changes);
+toggle it off on the Settings page to run a live sync. Override creds/list with `JF_USER`,
+`JF_PASS`, `LIST_URL` env vars.
+
+```bash
+docker compose -f docker-compose.dev.yml down      # stop (keeps the data volumes)
+docker compose -f docker-compose.dev.yml down -v   # stop + wipe volumes for a clean slate
+```
+
+Ports used on the host: **3000** (filmstrip), **8096** (Jellyfin), **7878** (Radarr).
+
 ## Troubleshooting
 
 - **"Radarr connection is not configured"** — `Settings.radarrUrl` / `radarrApiKey` are unset. Re-run

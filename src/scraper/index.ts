@@ -3,7 +3,9 @@ import { CollectionsScraper } from './collections';
 import { PopularScraper } from './popular';
 
 export interface LetterboxdMovie {
-    id: number;
+    /** Letterboxd's internal film id. Best-effort metadata only — Filmstrip keys films by tmdbId
+     *  and never persists this — so it may be null if Letterboxd's markup omits it. */
+    id: number|null;
     name: string;
     imdbId?: string|null;
     tmdbId?: string|null;

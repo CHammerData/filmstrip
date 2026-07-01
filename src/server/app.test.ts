@@ -15,7 +15,12 @@ jest.mock('../scheduler', () => ({
   syncAll: jest.fn(),
   syncDue: jest.fn(),
 }));
-jest.mock('../reconcile', () => ({ __esModule: true, approveDeletion: jest.fn(), keepDeletion: jest.fn() }));
+jest.mock('../reconcile', () => ({
+  __esModule: true,
+  approveDeletion: jest.fn(),
+  keepDeletion: jest.fn(),
+  deleteList: jest.fn(),
+}));
 jest.mock('../auth', () => ({
   __esModule: true,
   validateSession: jest.fn(),
@@ -28,7 +33,7 @@ jest.mock('../util/logger', () => ({ debug: jest.fn(), info: jest.fn(), warn: je
 import request from 'supertest';
 import { createApp } from './app';
 import { syncListById, syncAll, syncDue } from '../scheduler';
-import { approveDeletion, keepDeletion } from '../reconcile';
+import { approveDeletion, keepDeletion, deleteList } from '../reconcile';
 import { validateSession, login, logout } from '../auth';
 
 const app = createApp();
@@ -256,6 +261,19 @@ describe('lists', () => {
     (syncListById as jest.Mock).mockRejectedValue(new Error('List id=3 not found, disabled, or owner disabled.'));
     const res = await request(app).post('/api/lists/3/sync').set('Cookie', ADMIN);
     expect(res.status).toBe(400);
+  });
+
+  it('DELETE removes the list via reconcile.deleteList', async () => {
+    (deleteList as jest.Mock).mockResolvedValue(undefined);
+    const res = await request(app).delete('/api/lists/3').set('Cookie', ADMIN);
+    expect(res.status).toBe(204);
+    expect(deleteList).toHaveBeenCalledWith(3);
+  });
+
+  it('DELETE maps a missing list to 404', async () => {
+    (deleteList as jest.Mock).mockRejectedValue(new Error('List id=3 not found.'));
+    const res = await request(app).delete('/api/lists/3').set('Cookie', ADMIN);
+    expect(res.status).toBe(404);
   });
 });
 

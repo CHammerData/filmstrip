@@ -29,10 +29,11 @@ async function getKnownTagLabels(): Promise<Set<string>> {
 }
 
 interface DeletionCandidate {
-  /** left_list: must confirm no enabled list still wants it. watched: independent trigger —
-   *  the film may still be on the list (DESIGN.md §6: "queue on watch", not "remove from list"). */
-  reason: 'left_list' | 'watched';
-  triggeredByListId: number;
+  /** left_list: film dropped off a list that still exists. watched: owner watched it (may still be
+   *  on the list — DESIGN.md §6). list_deleted: its list was deleted (no triggering list remains). */
+  reason: 'left_list' | 'watched' | 'list_deleted';
+  /** The list whose event triggered this, or null when it no longer exists (list_deleted). */
+  triggeredByListId: number | null;
   requireNotWanted: boolean;
 }
 
@@ -85,9 +86,13 @@ async function evaluateForDeletion(movieId: number, candidate: DeletionCandidate
   await prisma.deletionRequest.create({
     data: { movieId, reason: candidate.reason, triggeredByListId: candidate.triggeredByListId, status: 'pending' },
   });
-  logger.info(
-    `Marked "${radarrMovie.title}" for deletion review (${candidate.reason === 'watched' ? 'watched' : 'left all lists'}).`
-  );
+  const why =
+    candidate.reason === 'watched'
+      ? 'watched'
+      : candidate.reason === 'list_deleted'
+        ? 'its list was deleted'
+        : 'left all lists';
+  logger.info(`Marked "${radarrMovie.title}" for deletion review (${why}).`);
 }
 
 /**
@@ -148,6 +153,48 @@ export async function reconcileWatched(list: ListWithUser, watchedTmdbIds: Set<n
       });
     } catch (e: any) {
       logger.error(`Reconcile (watched): failed evaluating movie id=${lm.movieId}:`, e?.message ?? e);
+    }
+  }
+}
+
+/**
+ * Delete a list and handle the films it held (DESIGN.md §4/§6):
+ * - `permanence` on  → pin the films Filmstrip added, so the keeper-rule never removes them;
+ * - `permanence` off → run each through the keeper-rule (reason `list_deleted`), queueing those
+ *   no other enabled list still wants.
+ * The list row and its `ListMovie` membership are removed either way. Membership is captured
+ * *before* deletion (it cascades away), then the keeper-rule runs *after* — so a film correctly
+ * reads as "no longer on this list". Never throws mid-film; throws only if the list is absent.
+ */
+export async function deleteList(listId: number): Promise<void> {
+  const list = await prisma.list.findUnique({ where: { id: listId } });
+  if (!list) throw new Error(`List id=${listId} not found.`);
+
+  const members = await prisma.listMovie.findMany({
+    where: { listId },
+    select: { movieId: true, movie: { select: { addedByFilmstrip: true } } },
+  });
+
+  await prisma.list.delete({ where: { id: listId } }); // cascade-removes this list's ListMovie rows
+
+  if (list.permanence) {
+    const toPin = members.filter((m) => m.movie.addedByFilmstrip).map((m) => m.movieId);
+    if (toPin.length > 0) {
+      await prisma.movie.updateMany({ where: { id: { in: toPin } }, data: { pinned: true } });
+    }
+    logger.info(`List "${list.label}" deleted (permanence on): pinned ${toPin.length} film(s).`);
+    return;
+  }
+
+  for (const m of members) {
+    try {
+      await evaluateForDeletion(m.movieId, {
+        reason: 'list_deleted',
+        triggeredByListId: null,
+        requireNotWanted: true,
+      });
+    } catch (e: any) {
+      logger.error(`List-delete: failed evaluating movie id=${m.movieId}:`, e?.message ?? e);
     }
   }
 }

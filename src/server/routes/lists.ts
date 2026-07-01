@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client';
 import prisma from '../../db/client';
 import { detectListType } from '../../scraper';
 import { syncListById } from '../../scheduler';
+import { deleteList } from '../../reconcile';
 import { asyncHandler, parseBody, parseId, notFound, conflict, badRequest, HttpError } from '../http';
 
 // Per-list overrides + behavior toggles. userId/url are only settable on create; listType is
@@ -20,6 +21,7 @@ const overrideSchema = z.object({
   takeStrategy: z.enum(['oldest', 'newest']).nullable(),
   checkIntervalMin: z.number().int().positive().nullable(),
   deleteFiles: z.boolean(),
+  permanence: z.boolean(),
   unwatchedOnly: z.boolean(),
   removeOnWatch: z.boolean(),
   makeCollection: z.boolean(),
@@ -112,11 +114,15 @@ export function listsRouter(): Router {
     '/:id',
     asyncHandler(async (req, res) => {
       const id = parseId(req.params.id);
+      // deleteList removes the list AND runs its films through the keeper-rule (pin if the
+      // list's permanence is on, else queue them for deletion review). See reconcile/deleteList.
       try {
-        await prisma.list.delete({ where: { id } });
+        await deleteList(id);
         res.status(204).end();
       } catch (e) {
-        if (isNotFound(e)) throw notFound(`List id=${id} not found.`);
+        if (e instanceof Error && /not found/i.test(e.message) && !(e instanceof HttpError)) {
+          throw notFound(`List id=${id} not found.`);
+        }
         throw e;
       }
     })

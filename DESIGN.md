@@ -54,7 +54,7 @@ List
   removeOnWatch     bool=false   queue for deletion when owner watches it [M4 ✅]
   makeCollection    bool=false   maintain a Jellyfin collection of this list [M4 ✅, unverified live]
   collectionNameOverride  string?                                   [M4 ✅]
-  permanence        bool=false   keep films if this list is deleted [planned -- needs list deletion first]
+  permanence        bool=false   on list deletion, pin its films instead of queueing them [✅]
 
 Movie  (normalized; unique tmdbId)                                  [M2 ✅]
   tmdbId, imdbId?, title, year                                      [M2 ✅]
@@ -75,7 +75,7 @@ SyncRun  (one row per sync attempt: status + counts + timing)      [M1 ✅]
 
 DeletionRequest                                                    [M3 ✅]
   movieId                                                            [M3 ✅]
-  reason            left_list | watched (list_deleted lands once list deletion exists) [M3+M4 ✅]
+  reason            left_list | watched | list_deleted [✅]
   triggeredByListId?                                                 [M3 ✅]
   status            pending | approved | kept                        [M3 ✅]
   createdAt, resolvedAt?                                              [M3 ✅]
@@ -94,8 +94,9 @@ Notes:
 `Movie.pinned` is pure Filmstrip bookkeeping — it changes nothing in Radarr or on disk. It means
 the keeper-rule will **never** queue the film for deletion. It is set by:
 - clicking **Keep** on a pending deletion (§6) — built, or
-- deleting a list whose **permanence** is on (its films get pinned so they survive) — **[planned]**,
-  waits on a list-deletion flow that doesn't exist yet.
+- deleting a list whose **permanence** is on (its Filmstrip-added films get pinned so they survive)
+  — built (`deleteList` in `src/reconcile`). With permanence off, deleting a list instead runs its
+  films through the keeper-rule (reason `list_deleted`).
 
 ## 5. The keeper-rule (single source of truth for removal) **[M3 ✅, extended M4 ✅]**
 

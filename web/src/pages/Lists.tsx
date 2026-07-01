@@ -176,6 +176,7 @@ function EditList({ list, onSaved }: { list: List; onSaved: () => void }) {
         enabled: form.enabled,
         monitored: form.monitored,
         deleteFiles: form.deleteFiles,
+        permanence: form.permanence,
         unwatchedOnly: form.unwatchedOnly,
         removeOnWatch: form.removeOnWatch,
         makeCollection: form.makeCollection,
@@ -249,6 +250,7 @@ function EditList({ list, onSaved }: { list: List; onSaved: () => void }) {
         <Toggle label="Enabled" checked={form.enabled} onChange={(v) => set('enabled', v)} />
         <Toggle label="Monitored" checked={form.monitored} onChange={(v) => set('monitored', v)} />
         <Toggle label="Delete files" checked={form.deleteFiles} onChange={(v) => set('deleteFiles', v)} />
+        <Toggle label="Permanence (keep on delete)" checked={form.permanence} onChange={(v) => set('permanence', v)} />
         <Toggle label="Unwatched only" checked={form.unwatchedOnly} onChange={(v) => set('unwatchedOnly', v)} />
         <Toggle label="Remove on watch" checked={form.removeOnWatch} onChange={(v) => set('removeOnWatch', v)} />
         <Toggle label="Make collection" checked={form.makeCollection} onChange={(v) => set('makeCollection', v)} />

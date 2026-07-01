@@ -82,6 +82,7 @@ function makeList(overrides: Partial<List> = {}): ListWithUser {
     takeStrategy: null,
     checkIntervalMin: null,
     deleteFiles: true,
+    permanence: false,
     unwatchedOnly: false,
     removeOnWatch: false,
     makeCollection: true,

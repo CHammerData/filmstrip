@@ -61,6 +61,7 @@ export interface List {
   takeStrategy: string | null;
   checkIntervalMin: number | null;
   deleteFiles: boolean;
+  permanence: boolean;
   unwatchedOnly: boolean;
   removeOnWatch: boolean;
   makeCollection: boolean;

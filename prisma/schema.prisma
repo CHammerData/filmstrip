@@ -103,6 +103,9 @@ model List {
   checkIntervalMin    Int?
   /// On an approved deletion triggered by this list, also delete the file (not just unmonitor).
   deleteFiles         Boolean @default(true)
+  /// When this list is deleted, keep its films: pin them (so the keeper-rule never removes them)
+  /// instead of queueing them for deletion review. See DESIGN.md §4/§6.
+  permanence          Boolean @default(false)
   /// Subtract the owner's watched set (Letterboxd ∪ Jellyfin) at scrape time -- skip re-adding them.
   unwatchedOnly       Boolean @default(false)
   /// When the owner watches a film still on this list, queue it for deletion review (doesn't
@@ -202,7 +205,7 @@ model DeletionRequest {
   movie   Movie @relation(fields: [movieId], references: [id], onDelete: Cascade)
   movieId Int
 
-  /// left_list | watched -- list_deleted lands once list deletion exists.
+  /// left_list | watched | list_deleted
   reason String
 
   /// The list whose sync caused this film to drop out of contention (informational; the

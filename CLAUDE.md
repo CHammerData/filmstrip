@@ -87,12 +87,14 @@ Module layout:
   `removeOnWatch` → `syncCollection` if `makeCollection`; dry-run writes no rows and skips all of
   the above; failures are recorded, never thrown), plus `syncListById`, `syncAll`, `syncDue`, and
   `startScheduler`.
-- **`src/reconcile/index.ts`** — the keeper-rule (DESIGN.md §5-§6). `reconcileList(list,
+- **`src/reconcile/index.ts`** — the keeper-rule (DESIGN.md §4-§6). `reconcileList(list,
   currentTmdbIds)` flips `ListMovie.presentOnList` for anything no longer scraped; `reconcileWatched
-  (list, watchedTmdbIds)` queues anything still on the list the owner has watched. Both funnel
-  through the same internal keeper-rule check, opening a `pending` `DeletionRequest` (and
-  unmonitoring in Radarr) for eligible candidates. `approveDeletion(id)`/`keepDeletion(id)` resolve
-  a pending request.
+  (list, watchedTmdbIds)` queues anything still on the list the owner has watched; `deleteList(id)`
+  deletes a list and either pins its Filmstrip-added films (if `List.permanence`) or runs them
+  through the keeper-rule with reason `list_deleted`. All funnel through the same internal
+  keeper-rule check, opening a `pending` `DeletionRequest` (and unmonitoring in Radarr) for eligible
+  candidates. `approveDeletion(id)`/`keepDeletion(id)` resolve a pending request. `DeletionRequest.
+  reason` ∈ `left_list | watched | list_deleted`.
 - **`src/server/`** — the REST API (M5) + GUI auth (M6). `app.ts` exports `createApp()` (an Express
   app, no `listen` — so tests drive it via supertest and `src/index.ts` binds the port; it also
   serves `web/dist` when that build exists, with an Express-5 `/*splat` catch-all for SPA
@@ -145,8 +147,9 @@ backend and runs one Node process (migrate deploy → serve SPA + `/api`); SQLit
 repo is intended but **not yet done** (deliberately on hold).
 
 Deferred refinements (tracked, not built): per-user list-ownership scoping (any authed user sees all
-lists); `List.permanence` + list deletion; Quick Connect login; Letterboxd diary-RSS watched signal;
-building `web/` in CI; validating `makeCollection` against a real-media Jellyfin library.
+lists); Quick Connect login; Letterboxd diary-RSS watched signal; building `web/` in CI; a
+periodic live-scrape smoke test (unit tests mock Letterboxd HTML, so a markup change can't be caught
+by them); validating `makeCollection` against a real-media Jellyfin library.
 
 GitHub workflows: `ci.yml` (backend typecheck + unit tests) runs on every push/PR; `live-api-test.yml`
 (real Radarr/Jellyfin containers) runs on PRs touching the API client files or via `workflow_dispatch`;

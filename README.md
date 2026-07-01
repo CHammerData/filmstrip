@@ -18,15 +18,16 @@ multi-user, and managed from one place** instead of one container per list.
 | Multiple lists | Run N containers | One service, one scheduler over all enabled lists |
 | Attribution | — | Per-list `User` tag in Radarr, so you can tell whose request a movie was |
 | State / dedup | `movies.json` on disk | Normalized `Movie` + `ListMovie` rows |
-| Interface | Logs only | CLI today; REST API + React GUI on the roadmap |
+| Interface | Logs only | CLI + REST API today; React GUI on the roadmap |
 | Packaging | One container per list | One container serving the SPA **and** `/api` |
 
 ## Status
 
 Early, under active development. **M1 (DB-backed multi-list core)**, **M2 (normalized films +
-provenance)**, **M3 (reconcile + deletion approval)**, and **M4 (Jellyfin integration)** are done —
-drive it via the CLI below; there's no GUI or Docker image yet. The full milestone roadmap lives in
-[PLAN.md](./PLAN.md), and the target data model + feature design in [DESIGN.md](./DESIGN.md).
+provenance)**, **M3 (reconcile + deletion approval)**, **M4 (Jellyfin integration)**, and **M5
+(REST API)** are done — drive it via the CLI or the `/api` endpoints below; there's no GUI or Docker
+image yet. The full milestone roadmap lives in [PLAN.md](./PLAN.md), and the target data model +
+feature design in [DESIGN.md](./DESIGN.md).
 
 > **Note:** the Jellyfin client (`src/api/jellyfin.ts`) is verified against a real
 > `lscr.io/linuxserver/jellyfin` instance via `.github/workflows/live-api-test.yml` (see
@@ -156,11 +157,30 @@ connection.
 A film that falls off every list it was on is never deleted outright — it's unmonitored in Radarr
 (file kept) and shows up in `npm run cli deletions` for you to approve or keep.
 
-### Running the scheduler
+### Running the scheduler + API
 
 ```bash
-npm run start:dev   # boots the scheduler: ticks every minute, honoring each list's interval
+npm run start:dev   # boots the scheduler (ticks every minute, honoring each list's interval)
+                    # AND the REST API (Express, PORT env, default 3000)
 ```
+
+### REST API
+
+All routes are served under `/api`. **No authentication yet** — it arrives with the GUI (M6,
+Jellyfin accounts); until then the API assumes a trusted local network. Errors come back as
+`{ "error": "message" }` with an appropriate status (400 validation, 404 missing, 409 conflict).
+
+| Method + path | Purpose |
+| :-- | :-- |
+| `GET /api/health` | Liveness check |
+| `GET/PATCH /api/settings` | The singleton Radarr/Jellyfin connection + global defaults |
+| `GET/POST /api/users`, `GET/PATCH/DELETE /api/users/:id` | Manage users |
+| `GET/POST /api/lists`, `GET/PATCH/DELETE /api/lists/:id` | Manage lists (type auto-detected from the URL) |
+| `POST /api/lists/:id/sync` | Sync one list now → returns the `SyncResult` |
+| `POST /api/sync` (`?due=true`) | Sync all enabled lists now (or only those due) |
+| `GET /api/deletions` (`?status=`) | The deletion-review queue (defaults to `pending`) |
+| `POST /api/deletions/:id/approve` \| `/keep` | Resolve a pending deletion |
+| `GET /api/sync-runs` (`?listId=&limit=`) | Sync history, newest first |
 
 ### Tests & typecheck
 

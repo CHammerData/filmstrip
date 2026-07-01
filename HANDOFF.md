@@ -118,19 +118,32 @@ npm run cli sync <listId>
     (Windows cmd *and* Linux/macOS bash both treat unquoted `|` as a real pipe when npm hands the
     script to a shell) — fixed by quoting: `--testPathIgnorePatterns=\"itest|livetest\"`. Caught by
     actually running the command, not just eyeballing the script string.
+- **M5 ✅ done** — REST API. New `src/server/`: `createApp()` (Express, no `listen`, so supertest
+  drives it and `src/index.ts` binds the port) mounts one router per resource under `/api` —
+  `settings` (singleton get/patch, auto-creates a blank row), `users` (CRUD), `lists` (CRUD with
+  URL→listType detection + `POST /:id/sync`), `deletions` (list + approve/keep, wrapping
+  `src/reconcile`), `sync-runs` (history), `sync` (`POST` sync-all, `?due=true` for sync-due).
+  Routers are thin: zod validation via `parseBody`, then prisma or existing scheduler/reconcile
+  calls; `http.ts` centralizes `HttpError`/`asyncHandler`/`parseId`/`parseBody` and the error
+  middleware. Prisma P2002/P2025 → 409/404. **No auth** (deferred to M6, see DESIGN §9). `src/index.ts`
+  now boots the scheduler AND the API (`PORT` env, default 3000). Added supertest; 32 route tests in
+  `src/server/app.test.ts` (183 total). No Prisma migration — M5 is wiring, not data model.
+  Smoke-tested against the real dev.db: server boots, returns the settings singleton, rejects a bad
+  list URL with 400.
 - Design + roadmap nailed down (DESIGN.md / PLAN.md). Project renamed lettarrboxd → **filmstrip**
   (package, GitHub repo, local folder, remotes all updated).
 
-## Next task: M5 — REST API
+## Next task: M6 — Web GUI
 
-Per [PLAN.md](./PLAN.md):
-- Express app wrapping the existing `src/scheduler`/`src/reconcile` functions — CRUD for
-  `User`/`List`/`Settings`, a manual "sync now" endpoint (`syncListById`), deletion-queue endpoints
-  (`GET` pending, `POST` approve/keep — already implemented as plain functions in
-  `src/reconcile/index.ts`, just needs HTTP wiring), and `SyncRun` history.
-- This is what M6 (web GUI) and the per-list toggle UI (`unwatchedOnly` etc., currently
-  DB-edit-only) will sit on top of.
-- No new Prisma migration expected — M5 is wiring, not data model.
+Per [PLAN.md](./PLAN.md) / [DESIGN.md §9](./DESIGN.md):
+- React + Vite SPA against the M5 REST API: list/user management, per-list config (the toggles
+  like `unwatchedOnly`/`removeOnWatch`/`makeCollection` that are currently DB-edit-only), the
+  deletion-review queue, and sync status/history.
+- **Jellyfin auth** (DESIGN §9): username/password proxied to Jellyfin `AuthenticateByName` (+
+  optional Quick Connect), Filmstrip issues its own session, `Policy.IsAdministrator` → admin. This
+  adds the auth layer the M5 API deliberately skipped — it will gate the existing `/api` endpoints.
+- Likely needs a small amount of new backend: auth endpoints/middleware on the Express app, and
+  the SPA served by the same server (per the "one container serving SPA + /api" packaging decision).
 
 ## Gotchas (also in CLAUDE.md)
 

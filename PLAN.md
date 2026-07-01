@@ -33,10 +33,12 @@ Letterboxd lists into Radarr — a complement to Jellyseerr, not a replacement.
   yet; it'll land alongside that.
 - **M4 — Jellyfin integration.** ✅ *Done.* Connection in `Settings`; watched-state (Letterboxd ∪
   Jellyfin) driving the **unwatchedOnly** and **removeOnWatch** toggles; **makeCollection**
-  (BoxSets). The Jellyfin collection endpoints are unverified against a live server — see
-  HANDOFF.md.
-- **M5 — REST API.** Express CRUD for users/lists/settings; manual "sync now"; deletion-queue
-  endpoints; `SyncRun` history.
+  (BoxSets). Verified against a live Jellyfin server via `live-api-test.yml` (empty library, so
+  wire compatibility only — see HANDOFF.md).
+- **M5 — REST API.** ✅ *Done.* Express app under `/api` (`src/server/`): CRUD for
+  users/lists/settings, manual "sync now" (per-list + sync-all/due), deletion-queue endpoints
+  (list/approve/keep), and `SyncRun` history — all wrapping the existing scheduler/reconcile
+  functions. No auth yet (arrives with the GUI, M6); assumes a trusted local network.
 - **M6 — Web GUI.** React SPA with **Jellyfin auth**: list/user management, per-list config, the
   deletion-review queue, sync status + history.
 - **M7 — Dockerize + deploy.** Single-container image; add a `filmstrip` service to the
@@ -48,5 +50,5 @@ deletion.
 
 ## Current status
 
-M1-M4 are complete. Next up is **M5** — the REST API (Express CRUD for users/lists/settings,
-manual "sync now", deletion-queue endpoints), which the web GUI (M6) will sit on top of.
+M1-M5 are complete. Next up is **M6** — the React SPA (Jellyfin auth, list/user management,
+per-list config, the deletion-review queue, sync status + history), built on the M5 REST API.

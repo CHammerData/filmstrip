@@ -151,9 +151,9 @@ failure as "nothing watched" rather than failing the sync. Feeds:
 Needed for two features:
 - **Collections (`makeCollection`)** — maintain a Jellyfin collection (BoxSet) named after the
   list (or `collectionNameOverride`); membership = the list's films matched to Jellyfin items by
-  tmdb id (`src/collections/index.ts`, backed by `src/api/jellyfin.ts`). **Caveat:** the Jellyfin
-  collection endpoints were implemented from API knowledge, not against a live server — mock-tested
-  only. Smoke-test against a real Jellyfin instance before relying on it.
+  tmdb id (`src/collections/index.ts`, backed by `src/api/jellyfin.ts`). **Caveat:** verified
+  against a real Jellyfin server via `live-api-test.yml`, but that instance's library was empty —
+  wire compatibility is confirmed, real-media collection matching is not yet exercised end-to-end.
 - **Watched state** — read per-user playback (§7).
 
 Connection lives on `Settings` (single Radarr, single Jellyfin for now).
@@ -175,6 +175,8 @@ and we need `jellyfinUserId` anyway.
 
 Not required until the GUI (M6). `User.jellyfinUserId` already exists and is used by M4's
 watched-state lookups, but purely as a pointer to a Jellyfin user id — no auth flow reads it yet.
+The **M5 REST API ships without auth** and assumes a trusted local network; the auth layer above
+(sessions + `IsAdministrator` roles) lands with the GUI and will gate the same endpoints.
 
 ## 10. Open questions / later
 

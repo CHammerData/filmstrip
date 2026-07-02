@@ -7,8 +7,14 @@ import logger from '../../util/logger';
 /**
  * Jellyfin account list for the "add a user" picker, so manual users always carry a real
  * jellyfinUserId (no forked duplicate when they later log in). Each candidate is flagged `linked`
- * when a Filmstrip user already owns that Jellyfin id. Degrades to { configured: false } when
- * Jellyfin is unset/unreachable, so the Users page falls back to free-text entry.
+ * when a Filmstrip user already owns that Jellyfin id.
+ *
+ * Response distinguishes three states so the UI can react correctly:
+ *  - { configured: false, reachable: true }  -> Jellyfin isn't set up; free-text entry is fine.
+ *  - { configured: true,  reachable: false } -> set up but unreachable; the UI must NOT fall back
+ *    to free-text (that would create the forked duplicate this picker exists to prevent) -- show a
+ *    retry instead.
+ *  - { configured: true,  reachable: true }  -> normal; `users` is populated.
  */
 export function jellyfinRouter(): Router {
   const router = Router();
@@ -16,11 +22,9 @@ export function jellyfinRouter(): Router {
   router.get(
     '/users',
     asyncHandler(async (_req, res) => {
-      const empty = { configured: false, users: [] };
-
       const settings = await prisma.settings.findUnique({ where: { id: 1 } });
       if (!settings?.jellyfinUrl || !settings?.jellyfinApiKey) {
-        res.json(empty);
+        res.json({ configured: false, reachable: true, users: [] });
         return;
       }
 
@@ -36,11 +40,12 @@ export function jellyfinRouter(): Router {
 
         res.json({
           configured: true,
+          reachable: true,
           users: jfUsers.map((u) => ({ ...u, linked: linkedIds.has(u.id) })),
         });
       } catch (e) {
         logger.error('Failed to load Jellyfin users:', e instanceof Error ? e.message : e);
-        res.json(empty);
+        res.json({ configured: true, reachable: false, users: [] });
       }
     })
   );

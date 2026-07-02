@@ -4,12 +4,21 @@ import { Prisma } from '@prisma/client';
 import prisma from '../../db/client';
 import { asyncHandler, parseBody, parseId, notFound, conflict } from '../http';
 
+// Same rule as /api/me: the username flows into a scrape URL, so reject path-bearing / oversized
+// values. null clears it. Kept in sync with src/server/routes/me.ts.
+const letterboxdUsername = z
+  .string()
+  .trim()
+  .min(1)
+  .max(50)
+  .regex(/^[A-Za-z0-9_]+$/, 'Letterboxd usernames use only letters, numbers, and underscores.');
+
 const createSchema = z
   .object({
     name: z.string().min(1),
     tag: z.string().min(1),
     enabled: z.boolean().optional(),
-    letterboxdUsername: z.string().nullable().optional(),
+    letterboxdUsername: letterboxdUsername.nullable().optional(),
     jellyfinUserId: z.string().nullable().optional(),
   })
   .strict();

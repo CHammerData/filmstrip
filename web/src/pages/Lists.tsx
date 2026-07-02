@@ -1,5 +1,5 @@
 import { Fragment, FormEvent, useState } from 'react';
-import { get, post, patch, del, ApiError, List, User, SyncResult, RadarrOptions } from '../api';
+import { get, post, patch, del, ApiError, List, User, Me, SyncResult, RadarrOptions } from '../api';
 import { useLoad } from '../useLoad';
 import { useAuth } from '../auth';
 import {
@@ -55,8 +55,8 @@ export default function Lists() {
       {notice && <div className="panel" style={{ borderColor: 'var(--ok)' }}>{notice}</div>}
       {error && <div className="error">{error}</div>}
 
-      {me?.isAdmin && (
-        <AddList users={users.data ?? []} radarrOptions={radarr.data ?? null} onAdded={lists.reload} />
+      {me && (
+        <AddList me={me} users={users.data ?? []} radarrOptions={radarr.data ?? null} onAdded={lists.reload} />
       )}
 
       {lists.loading && <p className="muted">Loading…</p>}
@@ -100,7 +100,7 @@ export default function Lists() {
                         Edit
                       </button>
                     )}
-                    {me?.isAdmin && (
+                    {canManage(l) && (
                       <button className="danger" onClick={() => remove(l.id)}>
                         Delete
                       </button>
@@ -131,15 +131,20 @@ export default function Lists() {
 }
 
 function AddList({
+  me,
   users,
   radarrOptions,
   onAdded,
 }: {
+  me: Me;
   users: User[];
   radarrOptions: RadarrOptions | null;
   onAdded: () => void;
 }) {
-  const [userId, setUserId] = useState('');
+  // Admins can create a list for anyone (owner dropdown); a non-admin can only create lists they
+  // own, so the owner is fixed to themselves and the dropdown is hidden (matches the backend rule).
+  const isAdmin = me.isAdmin;
+  const [userId, setUserId] = useState(isAdmin ? '' : String(me.user.id));
   const [url, setUrl] = useState('');
   const [advanced, setAdvanced] = useState(false);
   const [form, setForm] = useState<ListSettingsForm>(EMPTY_LIST_SETTINGS);
@@ -149,7 +154,7 @@ function AddList({
   const [linked, setLinked] = useState<Record<number, string>>({});
   const [promptUser, setPromptUser] = useState<User | null>(null);
 
-  const owner = users.find((u) => u.id === Number(userId)) ?? null;
+  const owner = isAdmin ? users.find((u) => u.id === Number(userId)) ?? null : me.user;
   // Letterboxd is the only meaningful "already seen it" signal for these toggles (Jellyfin
   // playback only tells us what to delete after a watch), so prompt whenever it's missing.
   const ownerHasLetterboxd = (u: User | null) => !!(u && (u.letterboxdUsername || linked[u.id]));
@@ -194,16 +199,20 @@ function AddList({
       <div className="row">
         <label>
           <span>Owner</span>
-          <select value={userId} onChange={(e) => onOwnerChange(e.target.value)} required>
-            <option value="" disabled>
-              Select user…
-            </option>
-            {users.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name}
+          {isAdmin ? (
+            <select value={userId} onChange={(e) => onOwnerChange(e.target.value)} required>
+              <option value="" disabled>
+                Select user…
               </option>
-            ))}
-          </select>
+              {users.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.name}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input value={me.user.name} disabled title="You can only add lists you own." />
+          )}
         </label>
         <label style={{ flex: 3 }}>
           <span>Letterboxd URL</span>
@@ -275,7 +284,12 @@ function EditList({
     setError(null);
     setBusy(true);
     try {
-      await patch(`/lists/${list.id}`, settingsPayload(form));
+      // A blank label would fail server validation (label must be non-empty); omit it so saving
+      // just keeps the existing label rather than surfacing a raw validation error.
+      const { label, ...rest } = settingsPayload(form);
+      const body: Record<string, unknown> = { ...rest };
+      if (label.trim()) body.label = label;
+      await patch(`/lists/${list.id}`, body);
       onSaved();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'Save failed.');

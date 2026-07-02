@@ -124,16 +124,12 @@ export interface RadarrMovieResource {
     [key: string]: any;
 }
 
-/** Every movie in Radarr, in one call. Used to enrich the Movies view with live status. Returns
- *  [] on error so the caller can degrade gracefully rather than fail the whole request. */
+/** Every movie in Radarr, in one call. Used to enrich the Movies view with live status. Throws on
+ *  error (e.g. Radarr unreachable) so the caller can tell "no movies" apart from "couldn't reach
+ *  Radarr" and degrade to an "unknown" status rather than mislabel everything as not-in-Radarr. */
 export async function getAllMovies(client: AxiosInstance): Promise<RadarrMovieResource[]> {
-    try {
-        const response = await client.get('/api/v3/movie');
-        return response.data;
-    } catch (error) {
-        logger.error('Error getting Radarr movies:', error);
-        return [];
-    }
+    const response = await client.get('/api/v3/movie');
+    return response.data;
 }
 
 export async function getMovieById(client: AxiosInstance, id: number): Promise<RadarrMovieResource | null> {

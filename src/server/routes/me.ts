@@ -7,7 +7,19 @@ import { asyncHandler, parseBody } from '../http';
 // own Letterboxd username (so the "Unwatched only" / "Remove on watch" prompt works for lists
 // they own) without granting the admin-only /api/users write surface. Always targets the caller
 // — the id comes from the session, never the body.
-const updateSchema = z.object({ letterboxdUsername: z.string().nullable() }).strict();
+// Validate the username: it flows into a scrape URL (letterboxd.com/<username>/films/), so reject
+// path-bearing, whitespace, or oversized values. null clears it. Shared shape with users.ts.
+const updateSchema = z
+  .object({
+    letterboxdUsername: z
+      .string()
+      .trim()
+      .min(1)
+      .max(50)
+      .regex(/^[A-Za-z0-9_]+$/, 'Letterboxd usernames use only letters, numbers, and underscores.')
+      .nullable(),
+  })
+  .strict();
 
 export function meRouter(): Router {
   const router = Router();

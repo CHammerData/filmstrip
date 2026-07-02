@@ -199,6 +199,7 @@ export function ListSettingsFields({
           <span>Take amount</span>
           <input
             type="number"
+            min={1}
             value={form.takeAmount ?? ''}
             onChange={(e) => set({ takeAmount: e.target.value ? Number(e.target.value) : null })}
           />
@@ -217,6 +218,7 @@ export function ListSettingsFields({
           <span>Check interval (min)</span>
           <input
             type="number"
+            min={1}
             value={form.checkIntervalMin ?? ''}
             onChange={(e) => set({ checkIntervalMin: e.target.value ? Number(e.target.value) : null })}
           />

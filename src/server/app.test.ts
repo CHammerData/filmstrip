@@ -300,6 +300,20 @@ describe('lists', () => {
     expect(res.status).toBe(403);
     expect(mockPrisma.list.create).not.toHaveBeenCalled();
   });
+
+  it('DELETE by a non-owner non-admin is forbidden', async () => {
+    mockPrisma.list.findUnique.mockResolvedValue({ id: 3, userId: 1 });
+    const res = await request(app).delete('/api/lists/3').set('Cookie', USER);
+    expect(res.status).toBe(403);
+    expect(deleteList).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/sync by a non-owner non-admin is forbidden', async () => {
+    mockPrisma.list.findUnique.mockResolvedValue({ id: 3, userId: 1 });
+    const res = await request(app).post('/api/lists/3/sync').set('Cookie', USER);
+    expect(res.status).toBe(403);
+    expect(syncListById).not.toHaveBeenCalled();
+  });
 });
 
 describe('me (self-service)', () => {
@@ -315,6 +329,13 @@ describe('me (self-service)', () => {
 
   it('PATCH /api/me rejects fields other than letterboxdUsername', async () => {
     const res = await request(app).patch('/api/me').set('Cookie', USER).send({ tag: 'hacked' });
+    expect(res.status).toBe(400);
+    expect(mockPrisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /api/me rejects a path-bearing letterboxd username', async () => {
+    // Guards the scrape URL (letterboxd.com/<username>/films/) against injection.
+    const res = await request(app).patch('/api/me').set('Cookie', USER).send({ letterboxdUsername: 'a/../b' });
     expect(res.status).toBe(400);
     expect(mockPrisma.user.update).not.toHaveBeenCalled();
   });

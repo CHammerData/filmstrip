@@ -97,6 +97,9 @@ function AddUser({ onAdded }: { onAdded: () => void }) {
   const [busy, setBusy] = useState(false);
 
   const configured = candidates.data?.configured ?? false;
+  // Configured but the server couldn't be reached: don't offer free-text entry (it would create a
+  // user with no jellyfinUserId — the forked duplicate the picker exists to prevent). Offer a retry.
+  const unreachable = configured && candidates.data?.reachable === false;
 
   function selectCandidate(id: string) {
     setJellyfinUserId(id);
@@ -138,7 +141,18 @@ function AddUser({ onAdded }: { onAdded: () => void }) {
       {error && <div className="error">{error}</div>}
       {candidates.loading && <p className="muted">Loading Jellyfin users…</p>}
 
-      {configured ? (
+      {unreachable ? (
+        <div>
+          <p className="muted" style={{ fontSize: 12 }}>
+            Jellyfin is configured but couldn’t be reached, so its account list is unavailable. Fix
+            the connection in Settings and retry — adding users manually here would create accounts
+            that can’t log in.
+          </p>
+          <button type="button" className="secondary" onClick={() => candidates.reload()}>
+            Retry
+          </button>
+        </div>
+      ) : configured ? (
         <div className="row">
           <label style={{ flex: 2 }}>
             <span>Jellyfin user</span>

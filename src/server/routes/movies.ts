@@ -7,8 +7,11 @@ import logger from '../../util/logger';
 /** Live status of a movie in Radarr, joined onto Filmstrip's provenance rows. */
 type RadarrStatus = 'downloaded' | 'wanted' | 'unmonitored' | 'not_in_radarr' | 'unknown';
 
-function deriveStatus(radarr: RadarrMovieResource | undefined, radarrConfigured: boolean): RadarrStatus {
-  if (!radarrConfigured) return 'unknown';
+// `radarrAvailable` means we actually got a movie list back. When Radarr is unconfigured OR
+// configured-but-unreachable it's false, and every row is "unknown" rather than "not_in_radarr" --
+// otherwise a transient Radarr outage would paint the whole library as missing.
+function deriveStatus(radarr: RadarrMovieResource | undefined, radarrAvailable: boolean): RadarrStatus {
+  if (!radarrAvailable) return 'unknown';
   if (!radarr) return 'not_in_radarr';
   if (radarr.hasFile) return 'downloaded';
   return radarr.monitored ? 'wanted' : 'unmonitored';
@@ -35,14 +38,17 @@ export function moviesRouter(): Router {
         orderBy: { title: 'asc' },
       });
 
-      // Index Radarr's movies by tmdbId for O(1) status lookup. Skipped entirely when unconfigured.
+      // Index Radarr's movies by tmdbId for O(1) status lookup. Skipped when unconfigured; if the
+      // fetch fails (Radarr down), radarrAvailable stays false so statuses degrade to "unknown".
       const settings = await prisma.settings.findUnique({ where: { id: 1 } });
       const radarrConfigured = Boolean(settings?.radarrUrl && settings?.radarrApiKey);
       const byTmdbId = new Map<number, RadarrMovieResource>();
+      let radarrAvailable = false;
       if (radarrConfigured) {
         try {
           const client = createRadarrClient({ url: settings!.radarrUrl!, apiKey: settings!.radarrApiKey! });
           for (const rm of await getAllMovies(client)) byTmdbId.set(rm.tmdbId, rm);
+          radarrAvailable = true;
         } catch (e) {
           logger.error('Failed to load Radarr movies for /movies:', e instanceof Error ? e.message : e);
         }
@@ -57,7 +63,7 @@ export function moviesRouter(): Router {
           year: m.year,
           addedByFilmstrip: m.addedByFilmstrip,
           pinned: m.pinned,
-          radarrStatus: deriveStatus(radarr, radarrConfigured),
+          radarrStatus: deriveStatus(radarr, radarrAvailable),
           radarr: radarr
             ? {
                 present: true,

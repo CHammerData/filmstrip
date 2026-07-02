@@ -81,6 +81,8 @@ export interface JellyfinCandidate {
 }
 export interface JellyfinCandidates {
   configured: boolean;
+  // false = configured but Jellyfin couldn't be reached; the picker must not fall back to free-text.
+  reachable: boolean;
   users: JellyfinCandidate[];
 }
 

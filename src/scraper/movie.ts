@@ -1,5 +1,6 @@
 import * as cheerio from 'cheerio';
 import { LETTERBOXD_BASE_URL, LetterboxdMovie } from ".";
+import { fetchWithRetry } from './http';
 import logger from '../util/logger';
 
 /**
@@ -8,8 +9,8 @@ import logger from '../util/logger';
  */
 export async function getMovie(link: string): Promise<LetterboxdMovie> {
     const movieUrl = new URL(link, LETTERBOXD_BASE_URL).toString();
-    
-    const response = await fetch(movieUrl);
+
+    const response = await fetchWithRetry(movieUrl);
     if (!response.ok) {
         throw new Error(`Failed to fetch movie page: ${response.status} ${response.statusText}`);
     }

@@ -1,7 +1,7 @@
 import * as cheerio from 'cheerio';
-import Bluebird from 'bluebird';
 import { LetterboxdMovie, LETTERBOXD_BASE_URL } from ".";
-import { getMovie } from './movie';
+import { fetchWithRetry } from './http';
+import { resolveMoviesTolerant } from './resolve';
 import logger from '../util/logger';
 import Scraper from './scraper.interface';
 
@@ -16,13 +16,7 @@ export class PopularScraper implements Scraper {
         const allMovieLinks = await this.getAllMovieLinks(ajaxUrl);
         const linksToProcess = typeof this.take === 'number' ? allMovieLinks.slice(0, this.take) : allMovieLinks;
 
-        const movies = await Bluebird.map(linksToProcess, link => {
-            return getMovie(link);
-        }, {
-            concurrency: 10
-        });
-
-        return movies;
+        return resolveMoviesTolerant(linksToProcess);
     }
 
     private transformToAjaxUrl(url: string): string {
@@ -49,7 +43,7 @@ export class PopularScraper implements Scraper {
         while (currentUrl) {
             logger.debug(`Fetching popular movies page: ${currentUrl}`);
 
-            const response = await fetch(currentUrl);
+            const response = await fetchWithRetry(currentUrl);
             if (!response.ok) {
                 throw new Error(`Failed to fetch popular movies page: ${response.status}`);
             }

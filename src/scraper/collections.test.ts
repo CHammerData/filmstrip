@@ -46,7 +46,8 @@ describe('CollectionsScraper', () => {
 
       // Verify fetch was called with AJAX URL
       expect(global.fetch).toHaveBeenCalledWith(
-        'https://letterboxd.com/films/ajax/in/the-dark-knight-collection/'
+        'https://letterboxd.com/films/ajax/in/the-dark-knight-collection/',
+        expect.anything()
       );
     });
 
@@ -74,7 +75,8 @@ describe('CollectionsScraper', () => {
 
       // Verify fetch was called with properly formatted AJAX URL
       expect(global.fetch).toHaveBeenCalledWith(
-        'https://letterboxd.com/films/ajax/in/collection-name/'
+        'https://letterboxd.com/films/ajax/in/collection-name/',
+        expect.anything()
       );
     });
 
@@ -102,7 +104,8 @@ describe('CollectionsScraper', () => {
 
       // Should use the URL as-is
       expect(global.fetch).toHaveBeenCalledWith(
-        'https://letterboxd.com/films/ajax/in/collection-name/'
+        'https://letterboxd.com/films/ajax/in/collection-name/',
+        expect.anything()
       );
     });
 
@@ -207,7 +210,8 @@ describe('CollectionsScraper', () => {
 
       // Verify fetch was called with sorting parameter
       expect(global.fetch).toHaveBeenCalledWith(
-        'https://letterboxd.com/films/ajax/in/collection/by/release-earliest/'
+        'https://letterboxd.com/films/ajax/in/collection/by/release-earliest/',
+        expect.anything()
       );
     });
 

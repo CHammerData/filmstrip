@@ -1,7 +1,7 @@
 import * as cheerio from 'cheerio';
-import Bluebird from 'bluebird';
 import { LetterboxdMovie, LETTERBOXD_BASE_URL } from ".";
-import { getMovie } from './movie';
+import { fetchWithRetry } from './http';
+import { resolveMoviesTolerant } from './resolve';
 import logger from '../util/logger';
 import Scraper from './scraper.interface';
 
@@ -25,13 +25,7 @@ export class CollectionsScraper implements Scraper {
         const allMovieLinks = await this.getAllMovieLinks(processUrl);
         const linksToProcess = typeof this.take === 'number' ? allMovieLinks.slice(0, this.take) : allMovieLinks;
 
-        const movies = await Bluebird.map(linksToProcess, link => {
-            return getMovie(link);
-        }, {
-            concurrency: 10
-        });
-
-        return movies;
+        return resolveMoviesTolerant(linksToProcess);
     }
 
     private transformToAjaxUrl(url: string): string {
@@ -59,7 +53,7 @@ export class CollectionsScraper implements Scraper {
         while (currentUrl) {
             logger.debug(`Fetching collections page: ${currentUrl}`);
 
-            const response = await fetch(currentUrl);
+            const response = await fetchWithRetry(currentUrl);
             if (!response.ok) {
                 throw new Error(`Failed to fetch collections page: ${response.status}`);
             }

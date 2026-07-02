@@ -126,7 +126,8 @@ describe('ListScraper', () => {
       expect(global.fetch).toHaveBeenCalledTimes(2);
       expect(global.fetch).toHaveBeenNthCalledWith(
         2,
-        'https://letterboxd.com/user/watchlist/page/2/'
+        'https://letterboxd.com/user/watchlist/page/2/',
+        expect.anything()
       );
     });
 
@@ -208,7 +209,8 @@ describe('ListScraper', () => {
       await scraper.getMovies();
 
       expect(global.fetch).toHaveBeenCalledWith(
-        'https://letterboxd.com/user/watchlist/by/date-earliest/'
+        'https://letterboxd.com/user/watchlist/by/date-earliest/',
+        expect.anything()
       );
     });
 

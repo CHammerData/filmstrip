@@ -46,7 +46,8 @@ describe('PopularScraper', () => {
 
       // Verify fetch was called with AJAX URL
       expect(global.fetch).toHaveBeenCalledWith(
-        'https://letterboxd.com/films/ajax/popular/'
+        'https://letterboxd.com/films/ajax/popular/',
+        expect.anything()
       );
     });
 
@@ -74,7 +75,8 @@ describe('PopularScraper', () => {
 
       // Verify fetch was called with properly formatted AJAX URL
       expect(global.fetch).toHaveBeenCalledWith(
-        'https://letterboxd.com/films/ajax/popular/'
+        'https://letterboxd.com/films/ajax/popular/',
+        expect.anything()
       );
     });
 
@@ -102,7 +104,8 @@ describe('PopularScraper', () => {
 
       // Should use the URL as-is
       expect(global.fetch).toHaveBeenCalledWith(
-        'https://letterboxd.com/films/ajax/popular/'
+        'https://letterboxd.com/films/ajax/popular/',
+        expect.anything()
       );
     });
 

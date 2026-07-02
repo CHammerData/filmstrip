@@ -1,7 +1,7 @@
 import * as cheerio from 'cheerio';
-import Bluebird from 'bluebird';
 import { LetterboxdMovie, LETTERBOXD_BASE_URL } from ".";
-import { getMovie } from './movie';
+import { fetchWithRetry } from './http';
+import { resolveMoviesTolerant } from './resolve';
 import logger from '../util/logger';
 import Scraper from './scraper.interface';
 
@@ -10,21 +10,15 @@ export class ListScraper implements Scraper {
 
     async getMovies(): Promise<LetterboxdMovie[]> {
         let processUrl = this.url;
-        
+
         if (this.strategy === 'oldest') {
             processUrl = this.url.replace(/\/$/, '') + '/by/date-earliest/';
         }
-        
+
         const allMovieLinks = await this.getAllMovieLinks(processUrl);
         const linksToProcess = typeof this.take === 'number' ? allMovieLinks.slice(0, this.take) : allMovieLinks;
 
-        const movies = await Bluebird.map(linksToProcess, link => {
-            return getMovie(link);
-        }, {
-            concurrency: 10
-        });
-        
-        return movies;
+        return resolveMoviesTolerant(linksToProcess);
     }
 
     private async getAllMovieLinks(baseUrl: string): Promise<string[]> {
@@ -34,7 +28,7 @@ export class ListScraper implements Scraper {
         while (currentUrl) {
             logger.debug(`Fetching page: ${currentUrl}`);
             
-            const response = await fetch(currentUrl);
+            const response = await fetchWithRetry(currentUrl);
             if (!response.ok) {
                 throw new Error(`Failed to fetch list page: ${response.status}`);
             }

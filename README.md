@@ -270,7 +270,7 @@ To cut a release:
 2. `git tag vX.Y.Z && git push origin vX.Y.Z`.
 3. Publish the GitHub Release for that tag. That fires [`docker.yml`](./.github/workflows/docker.yml),
    which verifies the tag matches `package.json`, builds `linux/amd64,linux/arm64`, and pushes
-   `vX.Y.Z`, `vX.Y`, `vX`, and `latest`. [`docker-hub-sync.yml`](./.github/workflows/docker-hub-sync.yml)
+   `X.Y.Z`, `X.Y`, `X`, and `latest`. [`docker-hub-sync.yml`](./.github/workflows/docker-hub-sync.yml)
    then syncs this README to the Docker Hub description. Both are also runnable via workflow_dispatch.
 
 ## Troubleshooting

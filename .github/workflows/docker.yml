@@ -61,10 +61,12 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE_NAME }}
+          # {{version}} etc. strip the leading v from the git tag (v0.2.0 -> 0.2.0), the Docker
+          # tag convention. latest only on a real release.
           tags: |
-            type=semver,pattern=v{{version}}
-            type=semver,pattern=v{{major}}.{{minor}}
-            type=semver,pattern=v{{major}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
             type=raw,value=latest,enable=${{ github.event_name == 'release' }}
 
       - name: Build and push Docker image

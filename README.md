@@ -270,8 +270,11 @@ To cut a release:
 2. `git tag vX.Y.Z && git push origin vX.Y.Z`.
 3. Publish the GitHub Release for that tag. That fires [`docker.yml`](./.github/workflows/docker.yml),
    which verifies the tag matches `package.json`, builds `linux/amd64,linux/arm64`, and pushes
-   `X.Y.Z`, `X.Y`, `X`, and `latest`. [`docker-hub-sync.yml`](./.github/workflows/docker-hub-sync.yml)
-   then syncs this README to the Docker Hub description. Both are also runnable via workflow_dispatch.
+   `X.Y.Z`, `X.Y`, `X`, and `latest` (also runnable via workflow_dispatch).
+
+The Docker Hub repository overview is a short, hand-written blurb that links back to this repo (kept
+minimal so it never needs updating) — GitHub is the source of truth for docs. It isn't automated:
+Docker Hub's description API rejects the personal access token used for image pushes.
 
 ## Troubleshooting
 

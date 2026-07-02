@@ -16,6 +16,7 @@ import { syncRouter } from './routes/sync';
 import { radarrRouter } from './routes/radarr';
 import { moviesRouter } from './routes/movies';
 import { jellyfinRouter } from './routes/jellyfin';
+import { meRouter } from './routes/me';
 
 /**
  * Build the Express app (no listen) so tests can drive it via supertest and src/index.ts can
@@ -23,8 +24,9 @@ import { jellyfinRouter } from './routes/jellyfin';
  *
  * Auth (M6): a Jellyfin login mints a DB-backed session cookie. Everything except /api/health and
  * POST /api/auth/login requires a session (requireAuth). Connection config, user management, the
- * deletion queue, and global sync are admin-only (requireAdmin); any authenticated user can manage
- * lists and read sync history. Per-user list ownership scoping is a later refinement.
+ * deletion queue, and global sync are admin-only (requireAdmin). Lists are ownership-scoped: any
+ * authenticated user can read them, but creating/editing/deleting/syncing a list requires being its
+ * owner or an admin (enforced in listsRouter). /api/me lets a user set their own Letterboxd username.
  */
 export function createApp(): Express {
   const app = express();
@@ -38,6 +40,7 @@ export function createApp(): Express {
   app.use('/api/auth', authRouter());
 
   app.use('/api/settings', requireAuth, requireAdmin, settingsRouter());
+  app.use('/api/me', requireAuth, meRouter());
   app.use('/api/users', requireAuth, requireAdmin, usersRouter());
   app.use('/api/jellyfin', requireAuth, requireAdmin, jellyfinRouter());
   app.use('/api/lists', requireAuth, listsRouter());

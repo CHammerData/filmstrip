@@ -238,6 +238,7 @@ describe('lists', () => {
   });
 
   it('PATCH re-detects listType when the URL changes', async () => {
+    mockPrisma.list.findUnique.mockResolvedValue({ id: 3, userId: 1 });
     mockPrisma.list.update.mockImplementation(({ data }: any) => Promise.resolve({ id: 3, ...data }));
     const res = await request(app)
       .patch('/api/lists/3')
@@ -250,6 +251,8 @@ describe('lists', () => {
   });
 
   it('POST /:id/sync returns the SyncResult', async () => {
+    // USER (id=2) owns this list, so a non-admin may sync it.
+    mockPrisma.list.findUnique.mockResolvedValue({ id: 3, userId: 2 });
     (syncListById as jest.Mock).mockResolvedValue({ listId: 3, status: 'success', added: 2 });
     const res = await request(app).post('/api/lists/3/sync').set('Cookie', USER);
     expect(res.status).toBe(200);
@@ -258,12 +261,14 @@ describe('lists', () => {
   });
 
   it('POST /:id/sync maps a disabled/missing list to 400', async () => {
+    mockPrisma.list.findUnique.mockResolvedValue({ id: 3, userId: 1 });
     (syncListById as jest.Mock).mockRejectedValue(new Error('List id=3 not found, disabled, or owner disabled.'));
     const res = await request(app).post('/api/lists/3/sync').set('Cookie', ADMIN);
     expect(res.status).toBe(400);
   });
 
   it('DELETE removes the list via reconcile.deleteList', async () => {
+    mockPrisma.list.findUnique.mockResolvedValue({ id: 3, userId: 1 });
     (deleteList as jest.Mock).mockResolvedValue(undefined);
     const res = await request(app).delete('/api/lists/3').set('Cookie', ADMIN);
     expect(res.status).toBe(204);
@@ -271,9 +276,52 @@ describe('lists', () => {
   });
 
   it('DELETE maps a missing list to 404', async () => {
-    (deleteList as jest.Mock).mockRejectedValue(new Error('List id=3 not found.'));
+    // No such list -> the ownership pre-check 404s before deleteList runs.
+    mockPrisma.list.findUnique.mockResolvedValue(null);
     const res = await request(app).delete('/api/lists/3').set('Cookie', ADMIN);
     expect(res.status).toBe(404);
+    expect(deleteList).not.toHaveBeenCalled();
+  });
+
+  it('PATCH by a non-owner non-admin is forbidden', async () => {
+    // List 3 is owned by user 1; USER is id=2 and not an admin.
+    mockPrisma.list.findUnique.mockResolvedValue({ id: 3, userId: 1 });
+    const res = await request(app).patch('/api/lists/3').set('Cookie', USER).send({ enabled: false });
+    expect(res.status).toBe(403);
+    expect(mockPrisma.list.update).not.toHaveBeenCalled();
+  });
+
+  it('POST create by a non-admin for another user is forbidden', async () => {
+    // USER (id=2) may not create a list owned by user 1.
+    const res = await request(app)
+      .post('/api/lists')
+      .set('Cookie', USER)
+      .send({ userId: 1, url: 'https://letterboxd.com/chris/watchlist/' });
+    expect(res.status).toBe(403);
+    expect(mockPrisma.list.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('me (self-service)', () => {
+  it('PATCH /api/me sets the caller’s Letterboxd username', async () => {
+    mockPrisma.user.update.mockImplementation(({ data }: any) => Promise.resolve({ id: 2, ...data }));
+    const res = await request(app).patch('/api/me').set('Cookie', USER).send({ letterboxdUsername: 'sam' });
+    expect(res.status).toBe(200);
+    // Always targets the session user, never a body-supplied id.
+    expect(mockPrisma.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 2 }, data: { letterboxdUsername: 'sam' } })
+    );
+  });
+
+  it('PATCH /api/me rejects fields other than letterboxdUsername', async () => {
+    const res = await request(app).patch('/api/me').set('Cookie', USER).send({ tag: 'hacked' });
+    expect(res.status).toBe(400);
+    expect(mockPrisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /api/me requires a session', async () => {
+    const res = await request(app).patch('/api/me').send({ letterboxdUsername: 'sam' });
+    expect(res.status).toBe(401);
   });
 });
 

@@ -24,6 +24,9 @@ export default function Lists() {
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Mirrors the backend rule: you can edit/sync a list if you own it, or if you're an admin.
+  const canManage = (l: List) => !!me && (me.isAdmin || l.userId === me.user.id);
+
   async function syncNow(id: number) {
     setNotice(null);
     setError(null);
@@ -87,12 +90,16 @@ export default function Lists() {
                   <td>{l.enabled ? 'yes' : 'no'}</td>
                   <td className="muted">{l.lastSyncedAt ? new Date(l.lastSyncedAt).toLocaleString() : 'never'}</td>
                   <td className="actions">
-                    <button className="secondary" onClick={() => syncNow(l.id)}>
-                      Sync
-                    </button>
-                    <button className="secondary" onClick={() => setEditing(editing === l.id ? null : l.id)}>
-                      Edit
-                    </button>
+                    {canManage(l) && (
+                      <button className="secondary" onClick={() => syncNow(l.id)}>
+                        Sync
+                      </button>
+                    )}
+                    {canManage(l) && (
+                      <button className="secondary" onClick={() => setEditing(editing === l.id ? null : l.id)}>
+                        Edit
+                      </button>
+                    )}
                     {me?.isAdmin && (
                       <button className="danger" onClick={() => remove(l.id)}>
                         Delete

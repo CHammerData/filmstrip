@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, Request } from 'express';
 import { z } from 'zod';
 import { Prisma } from '@prisma/client';
 import prisma from '../../db/client';
@@ -6,6 +6,16 @@ import { detectListType } from '../../scraper';
 import { syncListById } from '../../scheduler';
 import { deleteList } from '../../reconcile';
 import { asyncHandler, parseBody, parseId, notFound, conflict, badRequest, HttpError } from '../http';
+
+// Ownership scoping: admins manage any list; everyone else only the lists they own. Reads
+// (GET) stay open; this guards the write/sync paths. Assumes requireAuth populated req.session.
+function assertCanManage(req: Request, ownerId: number): void {
+  const session = req.session;
+  if (!session) throw new HttpError(401, 'Authentication required.');
+  if (!session.isAdmin && session.userId !== ownerId) {
+    throw new HttpError(403, 'You can only manage lists you own.');
+  }
+}
 
 // Per-list overrides + behavior toggles. userId/url are only settable on create; listType is
 // always derived from the URL, never client-supplied.
@@ -59,6 +69,8 @@ export function listsRouter(): Router {
     '/',
     asyncHandler(async (req, res) => {
       const { userId, url, label, ...overrides } = parseBody(createSchema, req.body);
+      // You can only create lists you own (admins may create for anyone).
+      assertCanManage(req, userId);
 
       const listType = detectListType(url);
       if (!listType) throw badRequest(`"${url}" is not a supported Letterboxd list URL.`);
@@ -88,6 +100,10 @@ export function listsRouter(): Router {
     '/:id',
     asyncHandler(async (req, res) => {
       const id = parseId(req.params.id);
+      const existing = await prisma.list.findUnique({ where: { id } });
+      if (!existing) throw notFound(`List id=${id} not found.`);
+      assertCanManage(req, existing.userId);
+
       const { url, ...rest } = parseBody(updateSchema, req.body);
 
       // Changing the URL re-detects the list type, so they never drift apart.
@@ -114,6 +130,9 @@ export function listsRouter(): Router {
     '/:id',
     asyncHandler(async (req, res) => {
       const id = parseId(req.params.id);
+      const existing = await prisma.list.findUnique({ where: { id } });
+      if (!existing) throw notFound(`List id=${id} not found.`);
+      assertCanManage(req, existing.userId);
       // deleteList removes the list AND runs its films through the keeper-rule (pin if the
       // list's permanence is on, else queue them for deletion review). See reconcile/deleteList.
       try {
@@ -133,6 +152,9 @@ export function listsRouter(): Router {
     '/:id/sync',
     asyncHandler(async (req, res) => {
       const id = parseId(req.params.id);
+      const existing = await prisma.list.findUnique({ where: { id } });
+      if (!existing) throw notFound(`List id=${id} not found.`);
+      assertCanManage(req, existing.userId);
       try {
         const result = await syncListById(id);
         res.json(result);

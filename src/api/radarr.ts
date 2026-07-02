@@ -83,6 +83,18 @@ export async function getQualityProfileId(client: AxiosInstance, profileName: st
     }
 }
 
+/** All quality profiles in Radarr (id + name), for populating the list-settings dropdowns. */
+export async function getQualityProfiles(client: AxiosInstance): Promise<{ id: number; name: string }[]> {
+    const response = await client.get('/api/v3/qualityprofile');
+    return (response.data as any[]).map((p) => ({ id: p.id, name: p.name }));
+}
+
+/** All root folders in Radarr (id + path), for populating the list-settings dropdowns. */
+export async function getRootFolders(client: AxiosInstance): Promise<{ id: number; path: string }[]> {
+    const response = await client.get('/api/v3/rootfolder');
+    return (response.data as any[]).map((f) => ({ id: f.id, path: f.path }));
+}
+
 export async function getRootFolder(client: AxiosInstance): Promise<string | null> {
     try {
         const response = await client.get('/api/v3/rootfolder');
@@ -110,6 +122,18 @@ export interface RadarrMovieResource {
     monitored: boolean;
     tags: number[];
     [key: string]: any;
+}
+
+/** Every movie in Radarr, in one call. Used to enrich the Movies view with live status. Returns
+ *  [] on error so the caller can degrade gracefully rather than fail the whole request. */
+export async function getAllMovies(client: AxiosInstance): Promise<RadarrMovieResource[]> {
+    try {
+        const response = await client.get('/api/v3/movie');
+        return response.data;
+    } catch (error) {
+        logger.error('Error getting Radarr movies:', error);
+        return [];
+    }
 }
 
 export async function getMovieById(client: AxiosInstance, id: number): Promise<RadarrMovieResource | null> {

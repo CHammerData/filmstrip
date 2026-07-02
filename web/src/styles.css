@@ -8,6 +8,25 @@
   --accent: #e0754a; /* filmstrip amber */
   --danger: #e05a5a;
   --ok: #5ac47e;
+  --error-bg: #3a1e1e;
+  --error-text: #f2c0c0;
+  color-scheme: dark;
+}
+
+/* Light theme: same variables, lighter values. Toggled via data-theme on <html> (see theme.ts). */
+:root[data-theme='light'] {
+  --bg: #f4f5f7;
+  --panel: #ffffff;
+  --panel-2: #eceef2;
+  --border: #d4d8df;
+  --text: #1b1e24;
+  --muted: #5c6472;
+  --accent: #cf5f36; /* slightly deeper amber for contrast on white */
+  --danger: #c23b3b;
+  --ok: #2f9e5b;
+  --error-bg: #fbe6e6;
+  --error-text: #8a2b2b;
+  color-scheme: light;
 }
 
 * {
@@ -188,10 +207,46 @@ button.link:hover {
   display: flex;
   gap: 6px;
 }
+
+/* Per-list settings form: a uniform grid so fields line up in columns and varying
+   help-text length never throws off the alignment (controls are top-aligned per row). */
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 2px 16px;
+  align-items: start;
+}
+.settings-grid > label {
+  margin-bottom: 10px;
+}
+.settings-grid .span-2 {
+  grid-column: span 2;
+}
+.settings-grid .help {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 3px;
+}
+.toggles-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 10px 16px;
+  align-items: start;
+  margin-top: 12px;
+}
+.toggles-grid > label {
+  margin: 0;
+}
+@media (max-width: 760px) {
+  .settings-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
 .error {
-  background: #3a1e1e;
+  background: var(--error-bg);
   border: 1px solid var(--danger);
-  color: #f2c0c0;
+  color: var(--error-text);
   padding: 8px 12px;
   border-radius: 6px;
   margin-bottom: 12px;
@@ -210,6 +265,29 @@ button.link:hover {
 .pill.fail {
   color: var(--danger);
   border-color: var(--danger);
+}
+
+/* Modal */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: grid;
+  place-items: center;
+  z-index: 100;
+  padding: 20px;
+}
+.modal {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px;
+  width: 440px;
+  max-width: 100%;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+.modal h2 {
+  margin-top: 0;
 }
 
 /* Login */

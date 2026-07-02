@@ -1,6 +1,16 @@
 import { Fragment, FormEvent, useState } from 'react';
-import { get, post, patch, del, ApiError, User } from '../api';
+import { get, post, patch, del, ApiError, User, JellyfinCandidates } from '../api';
 import { useLoad } from '../useLoad';
+
+/** Turn a display name into a Radarr-safe tag suggestion (mirrors the server's deriveUniqueTag). */
+function slugifyTag(name: string): string {
+  return (
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'user'
+  );
+}
 
 export default function Users() {
   const users = useLoad<User[]>(() => get('/users'));
@@ -78,20 +88,43 @@ export default function Users() {
 }
 
 function AddUser({ onAdded }: { onAdded: () => void }) {
+  const candidates = useLoad<JellyfinCandidates>(() => get('/jellyfin/users'));
+  const [jellyfinUserId, setJellyfinUserId] = useState('');
   const [name, setName] = useState('');
   const [tag, setTag] = useState('');
+  const [tagEdited, setTagEdited] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  const configured = candidates.data?.configured ?? false;
+
+  function selectCandidate(id: string) {
+    setJellyfinUserId(id);
+    const c = candidates.data?.users.find((u) => u.id === id);
+    if (c) {
+      setName(c.name);
+      if (!tagEdited) setTag(slugifyTag(c.name)); // keep an admin-typed tag; else suggest one
+    }
+  }
+
+  function reset() {
+    setJellyfinUserId('');
+    setName('');
+    setTag('');
+    setTagEdited(false);
+  }
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     setError(null);
     setBusy(true);
     try {
-      await post('/users', { name, tag });
-      setName('');
-      setTag('');
+      const body: Record<string, unknown> = { name, tag };
+      if (configured && jellyfinUserId) body.jellyfinUserId = jellyfinUserId;
+      await post('/users', body);
+      reset();
       onAdded();
+      candidates.reload(); // the new user now shows as "already added"
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not add user.');
     } finally {
@@ -103,19 +136,64 @@ function AddUser({ onAdded }: { onAdded: () => void }) {
     <form className="panel" onSubmit={submit}>
       <h2>Add a user</h2>
       {error && <div className="error">{error}</div>}
-      <div className="row">
-        <label>
-          <span>Name</span>
-          <input value={name} onChange={(e) => setName(e.target.value)} required />
-        </label>
-        <label>
-          <span>Radarr tag</span>
-          <input value={tag} onChange={(e) => setTag(e.target.value)} placeholder="e.g. chris" required />
-        </label>
-        <button type="submit" disabled={busy || !name || !tag} style={{ flex: 'none' }}>
-          Add
-        </button>
-      </div>
+      {candidates.loading && <p className="muted">Loading Jellyfin users…</p>}
+
+      {configured ? (
+        <div className="row">
+          <label style={{ flex: 2 }}>
+            <span>Jellyfin user</span>
+            <select value={jellyfinUserId} onChange={(e) => selectCandidate(e.target.value)} required>
+              <option value="" disabled>
+                Select a Jellyfin user…
+              </option>
+              {candidates.data!.users.map((u) => (
+                <option key={u.id} value={u.id} disabled={u.linked}>
+                  {u.name}
+                  {u.isAdmin ? ' (admin)' : ''}
+                  {u.linked ? ' — already added' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Radarr tag</span>
+            <input
+              value={tag}
+              onChange={(e) => {
+                setTag(e.target.value);
+                setTagEdited(true);
+              }}
+              placeholder="e.g. chris"
+              required
+            />
+          </label>
+          <button type="submit" disabled={busy || !jellyfinUserId || !tag} style={{ flex: 'none' }}>
+            Add
+          </button>
+        </div>
+      ) : (
+        <>
+          {!candidates.loading && (
+            <p className="muted" style={{ fontSize: 12 }}>
+              Jellyfin isn’t connected, so users are added manually — they can’t log in until you set
+              their Jellyfin id (Edit). Connect Jellyfin in Settings to pick from real accounts.
+            </p>
+          )}
+          <div className="row">
+            <label>
+              <span>Name</span>
+              <input value={name} onChange={(e) => setName(e.target.value)} required />
+            </label>
+            <label>
+              <span>Radarr tag</span>
+              <input value={tag} onChange={(e) => setTag(e.target.value)} placeholder="e.g. chris" required />
+            </label>
+            <button type="submit" disabled={busy || !name || !tag} style={{ flex: 'none' }}>
+              Add
+            </button>
+          </div>
+        </>
+      )}
     </form>
   );
 }

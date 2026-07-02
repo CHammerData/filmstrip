@@ -13,6 +13,9 @@ import { listsRouter } from './routes/lists';
 import { deletionsRouter } from './routes/deletions';
 import { syncRunsRouter } from './routes/syncRuns';
 import { syncRouter } from './routes/sync';
+import { radarrRouter } from './routes/radarr';
+import { moviesRouter } from './routes/movies';
+import { jellyfinRouter } from './routes/jellyfin';
 
 /**
  * Build the Express app (no listen) so tests can drive it via supertest and src/index.ts can
@@ -36,7 +39,10 @@ export function createApp(): Express {
 
   app.use('/api/settings', requireAuth, requireAdmin, settingsRouter());
   app.use('/api/users', requireAuth, requireAdmin, usersRouter());
+  app.use('/api/jellyfin', requireAuth, requireAdmin, jellyfinRouter());
   app.use('/api/lists', requireAuth, listsRouter());
+  app.use('/api/radarr', requireAuth, radarrRouter());
+  app.use('/api/movies', requireAuth, moviesRouter());
   app.use('/api/deletions', requireAuth, requireAdmin, deletionsRouter());
   app.use('/api/sync-runs', requireAuth, syncRunsRouter());
   app.use('/api/sync', requireAuth, requireAdmin, syncRouter());

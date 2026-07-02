@@ -87,6 +87,11 @@ function isNotFound(e: unknown): boolean {
 
 function mapUserError(e: unknown, tag?: string): unknown {
   if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+    const target = e.meta?.target;
+    const fields = Array.isArray(target) ? target.join(',') : String(target ?? '');
+    if (fields.includes('jellyfinUserId')) {
+      return conflict('That Jellyfin user is already linked to a Filmstrip user.');
+    }
     return conflict(`A user with tag "${tag}" already exists.`);
   }
   return e;

@@ -1,12 +1,25 @@
 import { Fragment, FormEvent, useState } from 'react';
-import { get, post, patch, del, ApiError, List, User, SyncResult } from '../api';
+import { get, post, patch, del, ApiError, List, User, SyncResult, RadarrOptions } from '../api';
 import { useLoad } from '../useLoad';
 import { useAuth } from '../auth';
+import {
+  ListSettingsFields,
+  ListSettingsForm,
+  EMPTY_LIST_SETTINGS,
+  settingsPayload,
+} from '../listFields';
+import { LetterboxdPrompt } from '../LetterboxdPrompt';
+
+/** Did this change turn on a toggle that needs a watched-history source? */
+function enablesWatchedFeature(patch: Partial<ListSettingsForm>): boolean {
+  return patch.unwatchedOnly === true || patch.removeOnWatch === true;
+}
 
 export default function Lists() {
   const { me } = useAuth();
   const lists = useLoad<List[]>(() => get('/lists'));
   const users = useLoad<User[]>(() => (me?.isAdmin ? get('/users') : Promise.resolve([])));
+  const radarr = useLoad<RadarrOptions>(() => get('/radarr/options'));
   const [editing, setEditing] = useState<number | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -39,7 +52,9 @@ export default function Lists() {
       {notice && <div className="panel" style={{ borderColor: 'var(--ok)' }}>{notice}</div>}
       {error && <div className="error">{error}</div>}
 
-      {me?.isAdmin && <AddList users={users.data ?? []} onAdded={lists.reload} />}
+      {me?.isAdmin && (
+        <AddList users={users.data ?? []} radarrOptions={radarr.data ?? null} onAdded={lists.reload} />
+      )}
 
       {lists.loading && <p className="muted">Loading…</p>}
       {lists.error && <div className="error">{lists.error}</div>}
@@ -90,6 +105,7 @@ export default function Lists() {
                     <td colSpan={6}>
                       <EditList
                         list={l}
+                        radarrOptions={radarr.data ?? null}
                         onSaved={() => {
                           setEditing(null);
                           lists.reload();
@@ -107,19 +123,55 @@ export default function Lists() {
   );
 }
 
-function AddList({ users, onAdded }: { users: User[]; onAdded: () => void }) {
+function AddList({
+  users,
+  radarrOptions,
+  onAdded,
+}: {
+  users: User[];
+  radarrOptions: RadarrOptions | null;
+  onAdded: () => void;
+}) {
   const [userId, setUserId] = useState('');
   const [url, setUrl] = useState('');
+  const [advanced, setAdvanced] = useState(false);
+  const [form, setForm] = useState<ListSettingsForm>(EMPTY_LIST_SETTINGS);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Letterboxd usernames linked via the prompt this session, so we don't re-prompt after saving.
+  const [linked, setLinked] = useState<Record<number, string>>({});
+  const [promptUser, setPromptUser] = useState<User | null>(null);
+
+  const owner = users.find((u) => u.id === Number(userId)) ?? null;
+  // Letterboxd is the only meaningful "already seen it" signal for these toggles (Jellyfin
+  // playback only tells us what to delete after a watch), so prompt whenever it's missing.
+  const ownerHasLetterboxd = (u: User | null) => !!(u && (u.letterboxdUsername || linked[u.id]));
+
+  const set = (patch: Partial<ListSettingsForm>) => {
+    setForm((f) => ({ ...f, ...patch }));
+    if (enablesWatchedFeature(patch) && owner && !ownerHasLetterboxd(owner)) setPromptUser(owner);
+  };
+
+  function onOwnerChange(id: string) {
+    setUserId(id);
+    const u = users.find((x) => x.id === Number(id)) ?? null;
+    if ((form.unwatchedOnly || form.removeOnWatch) && u && !ownerHasLetterboxd(u)) setPromptUser(u);
+  }
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     setError(null);
     setBusy(true);
     try {
-      await post('/lists', { userId: Number(userId), url });
+      // Only send overrides that were actually touched; a blank label lets the backend
+      // auto-generate one (createSchema rejects an empty label).
+      const { label, ...overrides } = settingsPayload(form);
+      const body: Record<string, unknown> = { userId: Number(userId), url, ...overrides };
+      if (label.trim()) body.label = label;
+      await post('/lists', body);
       setUrl('');
+      setForm(EMPTY_LIST_SETTINGS);
+      setAdvanced(false);
       onAdded();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not add list.');
@@ -135,7 +187,7 @@ function AddList({ users, onAdded }: { users: User[]; onAdded: () => void }) {
       <div className="row">
         <label>
           <span>Owner</span>
-          <select value={userId} onChange={(e) => setUserId(e.target.value)} required>
+          <select value={userId} onChange={(e) => onOwnerChange(e.target.value)} required>
             <option value="" disabled>
               Select user…
             </option>
@@ -154,39 +206,69 @@ function AddList({ users, onAdded }: { users: User[]; onAdded: () => void }) {
           Add
         </button>
       </div>
+
+      <button
+        type="button"
+        className="link"
+        onClick={() => setAdvanced((a) => !a)}
+        style={{ marginTop: 4 }}
+      >
+        {advanced ? '▾ Advanced settings' : '▸ Advanced settings'}
+      </button>
+
+      {advanced && (
+        <div style={{ marginTop: 12 }}>
+          {radarrOptions && !radarrOptions.configured && (
+            <p className="muted" style={{ fontSize: 12 }}>
+              Radarr isn’t connected, so profile/folder/tags are free-text. Connect it in Settings for
+              dropdowns.
+            </p>
+          )}
+          <ListSettingsFields form={form} set={set} radarrOptions={radarrOptions} />
+        </div>
+      )}
+
+      {promptUser && (
+        <LetterboxdPrompt
+          user={promptUser}
+          onSaved={(username) => {
+            setLinked((m) => ({ ...m, [promptUser!.id]: username }));
+            setPromptUser(null);
+          }}
+          onClose={() => setPromptUser(null)}
+        />
+      )}
     </form>
   );
 }
 
-function EditList({ list, onSaved }: { list: List; onSaved: () => void }) {
-  const [form, setForm] = useState(list);
+function EditList({
+  list,
+  radarrOptions,
+  onSaved,
+}: {
+  list: List;
+  radarrOptions: RadarrOptions | null;
+  onSaved: () => void;
+}) {
+  const [form, setForm] = useState<ListSettingsForm>(list);
+  const [owner, setOwner] = useState<User | null>(list.user ?? null);
+  const [prompt, setPrompt] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  function set<K extends keyof List>(key: K, value: List[K]) {
-    setForm((f) => ({ ...f, [key]: value }));
-  }
+  const ownerHasLetterboxd = !!(owner && owner.letterboxdUsername);
+
+  const set = (patch: Partial<ListSettingsForm>) => {
+    setForm((f) => ({ ...f, ...patch }));
+    if (enablesWatchedFeature(patch) && owner && !ownerHasLetterboxd) setPrompt(true);
+  };
 
   async function save() {
     setError(null);
     setBusy(true);
     try {
-      await patch(`/lists/${list.id}`, {
-        label: form.label,
-        enabled: form.enabled,
-        monitored: form.monitored,
-        deleteFiles: form.deleteFiles,
-        permanence: form.permanence,
-        unwatchedOnly: form.unwatchedOnly,
-        removeOnWatch: form.removeOnWatch,
-        makeCollection: form.makeCollection,
-        qualityProfile: emptyToNull(form.qualityProfile),
-        minimumAvailability: emptyToNull(form.minimumAvailability),
-        extraTags: emptyToNull(form.extraTags),
-        collectionNameOverride: emptyToNull(form.collectionNameOverride),
-        takeAmount: form.takeAmount,
-        checkIntervalMin: form.checkIntervalMin,
-      });
+      await patch(`/lists/${list.id}`, settingsPayload(form));
       onSaved();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'Save failed.');
@@ -198,84 +280,27 @@ function EditList({ list, onSaved }: { list: List; onSaved: () => void }) {
   return (
     <div className="panel" style={{ background: 'var(--panel-2)' }}>
       {error && <div className="error">{error}</div>}
-      <div className="row">
-        <label>
-          <span>Label</span>
-          <input value={form.label} onChange={(e) => set('label', e.target.value)} />
-        </label>
-        <label>
-          <span>Quality profile (blank = default)</span>
-          <input value={form.qualityProfile ?? ''} onChange={(e) => set('qualityProfile', e.target.value)} />
-        </label>
-        <label>
-          <span>Min. availability</span>
-          <select value={form.minimumAvailability ?? ''} onChange={(e) => set('minimumAvailability', e.target.value)}>
-            <option value="">(default)</option>
-            <option value="announced">announced</option>
-            <option value="inCinemas">inCinemas</option>
-            <option value="released">released</option>
-          </select>
-        </label>
-      </div>
-      <div className="row">
-        <label>
-          <span>Extra tags (comma-sep)</span>
-          <input value={form.extraTags ?? ''} onChange={(e) => set('extraTags', e.target.value)} />
-        </label>
-        <label>
-          <span>Take amount</span>
-          <input
-            type="number"
-            value={form.takeAmount ?? ''}
-            onChange={(e) => set('takeAmount', e.target.value ? Number(e.target.value) : null)}
-          />
-        </label>
-        <label>
-          <span>Check interval (min)</span>
-          <input
-            type="number"
-            value={form.checkIntervalMin ?? ''}
-            onChange={(e) => set('checkIntervalMin', e.target.value ? Number(e.target.value) : null)}
-          />
-        </label>
-        <label>
-          <span>Collection name override</span>
-          <input
-            value={form.collectionNameOverride ?? ''}
-            onChange={(e) => set('collectionNameOverride', e.target.value)}
-          />
-        </label>
-      </div>
-      <div className="row" style={{ gap: 20 }}>
-        <Toggle label="Enabled" checked={form.enabled} onChange={(v) => set('enabled', v)} />
-        <Toggle label="Monitored" checked={form.monitored} onChange={(v) => set('monitored', v)} />
-        <Toggle label="Delete files" checked={form.deleteFiles} onChange={(v) => set('deleteFiles', v)} />
-        <Toggle label="Permanence (keep on delete)" checked={form.permanence} onChange={(v) => set('permanence', v)} />
-        <Toggle label="Unwatched only" checked={form.unwatchedOnly} onChange={(v) => set('unwatchedOnly', v)} />
-        <Toggle label="Remove on watch" checked={form.removeOnWatch} onChange={(v) => set('removeOnWatch', v)} />
-        <Toggle label="Make collection" checked={form.makeCollection} onChange={(v) => set('makeCollection', v)} />
-      </div>
-      <button onClick={save} disabled={busy}>
+      {radarrOptions && !radarrOptions.configured && (
+        <p className="muted" style={{ fontSize: 12 }}>
+          Radarr isn’t connected, so profile/folder/tags are free-text. Connect it in Settings for
+          dropdowns.
+        </p>
+      )}
+      <ListSettingsFields form={form} set={set} radarrOptions={radarrOptions} />
+      <button onClick={save} disabled={busy} style={{ marginTop: 12 }}>
         {busy ? 'Saving…' : 'Save'}
       </button>
+
+      {prompt && owner && (
+        <LetterboxdPrompt
+          user={owner}
+          onSaved={(username) => {
+            setOwner({ ...owner!, letterboxdUsername: username });
+            setPrompt(false);
+          }}
+          onClose={() => setPrompt(false)}
+        />
+      )}
     </div>
   );
-}
-
-function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <label style={{ display: 'flex', gap: 6, alignItems: 'center', flex: 'none', margin: 0 }}>
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        style={{ width: 'auto' }}
-      />
-      <span style={{ margin: 0 }}>{label}</span>
-    </label>
-  );
-}
-
-function emptyToNull(v: string | null): string | null {
-  return v && v.trim() !== '' ? v : null;
 }

@@ -54,6 +54,7 @@ export interface List {
   label: string;
   enabled: boolean;
   qualityProfile: string | null;
+  rootFolderId: string | null;
   minimumAvailability: string | null;
   monitored: boolean;
   extraTags: string | null;
@@ -68,6 +69,19 @@ export interface List {
   collectionNameOverride: string | null;
   lastSyncedAt: string | null;
   user?: User;
+}
+
+// A Jellyfin account offered in the "add a user" picker. `linked` = a Filmstrip user already
+// owns this Jellyfin id. `configured` is false when Jellyfin is unset/unreachable.
+export interface JellyfinCandidate {
+  id: string;
+  name: string;
+  isAdmin: boolean;
+  linked: boolean;
+}
+export interface JellyfinCandidates {
+  configured: boolean;
+  users: JellyfinCandidate[];
 }
 
 export interface Settings {
@@ -87,6 +101,36 @@ export interface Movie {
   tmdbId: number;
   title: string;
   year: number | null;
+}
+
+// Radarr metadata for the list-settings dropdowns. `configured` is false when Radarr is
+// unset/unreachable — the forms then fall back to free-text inputs.
+export interface RadarrOptions {
+  configured: boolean;
+  qualityProfiles: { id: number; name: string }[];
+  rootFolders: { id: number; path: string }[];
+  tags: { id: number; label: string }[];
+}
+
+export type RadarrStatus = 'downloaded' | 'wanted' | 'unmonitored' | 'not_in_radarr' | 'unknown';
+
+export interface MovieSource {
+  listId: number;
+  listLabel: string;
+  listType: string;
+  ownerName: string;
+}
+
+export interface MovieRow {
+  id: number;
+  tmdbId: number;
+  title: string;
+  year: number | null;
+  addedByFilmstrip: boolean;
+  pinned: boolean;
+  radarrStatus: RadarrStatus;
+  radarr: { present: boolean; hasFile: boolean; monitored: boolean; sizeOnDisk: number } | null;
+  sources: MovieSource[];
 }
 
 export interface DeletionRequest {

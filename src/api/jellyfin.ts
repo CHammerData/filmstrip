@@ -55,6 +55,23 @@ export async function authenticateByName(
   };
 }
 
+/** A Jellyfin account, for the "pick a user to add" dropdown. */
+export interface JellyfinUserSummary {
+  id: string;
+  name: string;
+  isAdmin: boolean;
+}
+
+/** Every user account on the Jellyfin server (GET /Users, needs the server API key). */
+export async function getUsers(client: AxiosInstance): Promise<JellyfinUserSummary[]> {
+  const response = await client.get('/Users');
+  return (response.data as any[]).map((u) => ({
+    id: u.Id,
+    name: u.Name,
+    isAdmin: !!u.Policy?.IsAdministrator,
+  }));
+}
+
 interface JellyfinItem {
   Id: string;
   Name: string;

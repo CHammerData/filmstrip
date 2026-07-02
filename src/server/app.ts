@@ -3,7 +3,9 @@ import fs from 'fs';
 import express, { Express, Request, Response, NextFunction } from 'express';
 import cookieParser from 'cookie-parser';
 import { ZodError } from 'zod';
+import prisma from '../db/client';
 import logger from '../util/logger';
+import { versionInfo } from '../util/version';
 import { HttpError } from './http';
 import { requireAuth, requireAdmin } from './auth';
 import { authRouter } from './routes/auth';
@@ -18,8 +20,44 @@ import { moviesRouter } from './routes/movies';
 import { jellyfinRouter } from './routes/jellyfin';
 import { meRouter } from './routes/me';
 
+/** How the process is running: full web GUI, or headless sync daemon. */
+export type RunMode = 'gui' | 'headless';
+
 /**
- * Build the Express app (no listen) so tests can drive it via supertest and src/index.ts can
+ * The /api/health handler, shared by both run modes. Reports version + mode + uptime, and does a
+ * fast DB liveness probe: a reachable DB -> 200 {status:'ok'}, an unreachable one -> 503
+ * {status:'degraded'}. The Dockerfile HEALTHCHECK checks response.ok, so 503 correctly marks the
+ * container unhealthy. Never throws (the probe is wrapped), so it needs no asyncHandler.
+ */
+function healthHandler(mode: RunMode) {
+  return async (_req: Request, res: Response): Promise<void> => {
+    const info = { ...versionInfo(), mode, uptime: Math.round(process.uptime()) };
+    try {
+      await prisma.$queryRaw`SELECT 1`;
+      res.json({ status: 'ok', ...info });
+    } catch (e) {
+      logger.error('Health DB probe failed:', e instanceof Error ? e.message : e);
+      res.status(503).json({ status: 'degraded', ...info });
+    }
+  };
+}
+
+/**
+ * Log each completed request (method, path, status, elapsed) at info level. Skips /api/health so
+ * the 30s Docker HEALTHCHECK doesn't flood the log. gui mode only.
+ */
+function requestLogger(req: Request, res: Response, next: NextFunction): void {
+  if (req.path === '/api/health') return next();
+  const start = process.hrtime.bigint();
+  res.on('finish', () => {
+    const ms = Number(process.hrtime.bigint() - start) / 1e6;
+    logger.info(`${req.method} ${req.originalUrl} ${res.statusCode} ${ms.toFixed(1)}ms`);
+  });
+  next();
+}
+
+/**
+ * Build the full web app (no listen) so tests can drive it via supertest and src/index.ts can
  * bind a port. All routes live under /api.
  *
  * Auth (M6): a Jellyfin login mints a DB-backed session cookie. Everything except /api/health and
@@ -32,10 +70,9 @@ export function createApp(): Express {
   const app = express();
   app.use(express.json());
   app.use(cookieParser());
+  app.use(requestLogger);
 
-  app.get('/api/health', (_req, res) => {
-    res.json({ status: 'ok' });
-  });
+  app.get('/api/health', healthHandler('gui'));
 
   app.use('/api/auth', authRouter());
 
@@ -59,6 +96,21 @@ export function createApp(): Express {
 
   app.use(errorHandler);
 
+  return app;
+}
+
+/**
+ * Build the headless app: the sync scheduler runs in-process (started by src/index.ts); this HTTP
+ * surface exists only so the Docker HEALTHCHECK has something to hit. It exposes /api/health and
+ * nothing else — no SPA, no auth-gated routes. Every other path 404s as JSON.
+ */
+export function createHeadlessApp(): Express {
+  const app = express();
+  app.get('/api/health', healthHandler('headless'));
+  app.use((_req, res) => {
+    res.status(404).json({ error: 'Not found.' });
+  });
+  app.use(errorHandler);
   return app;
 }
 

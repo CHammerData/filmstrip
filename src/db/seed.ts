@@ -5,8 +5,11 @@ import { detectListType } from '../scraper';
 import logger from '../util/logger';
 
 /**
- * Seed the DB for M1 from environment variables, so a single list can be synced
- * before the GUI (M3) exists. Idempotent: re-running updates the same rows.
+ * Seed the DB from environment variables. Two callers:
+ *   - `npm run seed` (the CLI wrapper at the bottom of this file), the one-time bootstrap.
+ *   - headless mode (src/index.ts), which auto-seeds on boot so env is the source of truth for a
+ *     GUI-less deployment.
+ * Idempotent: re-running upserts the same rows.
  *
  * Reads (all optional; missing Radarr/Jellyfin values just leave Settings blank):
  *   RADARR_API_URL, RADARR_API_KEY, RADARR_QUALITY_PROFILE,
@@ -16,7 +19,7 @@ import logger from '../util/logger';
  *   SEED_USER_LETTERBOXD_USERNAME, SEED_USER_JELLYFIN_USER_ID,
  *   LETTERBOXD_URL (the list to monitor), SEED_LIST_LABEL.
  */
-async function seed() {
+export async function seedFromEnv() {
   const dryRun = (process.env.DRY_RUN ?? 'true').toLowerCase() === 'true';
 
   const settings = await prisma.settings.upsert({
@@ -78,10 +81,14 @@ async function seed() {
   logger.info(`Seeded List "${list.label}" (id=${list.id}, type=${list.listType}).`);
 }
 
-seed()
-  .then(() => prisma.$disconnect())
-  .catch(async (e) => {
-    logger.error('Seed failed:', e);
-    await prisma.$disconnect();
-    process.exit(1);
-  });
+// CLI entrypoint (`npm run seed`). When imported (headless boot), this block is skipped so the
+// caller owns the prisma lifecycle.
+if (require.main === module) {
+  seedFromEnv()
+    .then(() => prisma.$disconnect())
+    .catch(async (e) => {
+      logger.error('Seed failed:', e);
+      await prisma.$disconnect();
+      process.exit(1);
+    });
+}

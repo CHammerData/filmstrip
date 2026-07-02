@@ -36,10 +36,27 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
+# Version/commit are injected by the release workflow (--build-arg) and surfaced by /api/health and
+# the startup log. They default empty so a plain `docker build` still works (version then falls back
+# to package.json).
+ARG FILMSTRIP_VERSION=""
+ARG FILMSTRIP_COMMIT=""
+ENV FILMSTRIP_VERSION=${FILMSTRIP_VERSION}
+ENV FILMSTRIP_COMMIT=${FILMSTRIP_COMMIT}
+
+LABEL org.opencontainers.image.title="Filmstrip" \
+      org.opencontainers.image.description="Sync Letterboxd watchlists and lists into Radarr — multi-list, multi-user." \
+      org.opencontainers.image.source="https://github.com/CHammerData/filmstrip" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version=${FILMSTRIP_VERSION} \
+      org.opencontainers.image.revision=${FILMSTRIP_COMMIT}
+
 ENV NODE_ENV=production
 # SQLite DB lives on a mounted volume so it survives container recreation.
 ENV DATABASE_URL="file:/config/filmstrip.db"
 ENV PORT=3000
+# Run mode: gui (default) serves the SPA + /api; headless runs the scheduler + /api/health only.
+ENV FILMSTRIP_MODE=gui
 
 # node_modules from the build stage already has the generated Prisma client + the prisma CLI
 # (used for `migrate deploy` at startup); dist is the compiled backend.

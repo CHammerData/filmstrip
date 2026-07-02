@@ -19,4 +19,4 @@ jobs:
     uses: ./.github/workflows/build-and-test.yml
     secrets: inherit
 
-  # Docker build/push is intentionally disabled until M5 (see docker.yml).
+  # Image build/push happens on release, not here — see docker.yml.

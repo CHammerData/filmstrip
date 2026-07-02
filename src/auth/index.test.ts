@@ -13,14 +13,37 @@ import { authenticateByName } from '../api/jellyfin';
 
 beforeEach(() => {
   jest.clearAllMocks();
+  delete process.env.JELLYFIN_URL; // keep the env-fallback out of unrelated cases
   mockPrisma.session.create.mockResolvedValue({});
 });
 
 describe('login', () => {
-  it('throws when Jellyfin is not configured', async () => {
+  it('throws when Jellyfin is not configured (no Settings URL, no env)', async () => {
     mockPrisma.settings.findUnique.mockResolvedValue({ id: 1, jellyfinUrl: null });
     await expect(login('u', 'p')).rejects.toThrow(/not configured/);
     expect(authenticateByName).not.toHaveBeenCalled();
+  });
+
+  it('falls back to JELLYFIN_URL env when Settings has no URL (fresh-deploy bootstrap)', async () => {
+    mockPrisma.settings.findUnique.mockResolvedValue(null); // no Settings row yet
+    process.env.JELLYFIN_URL = 'http://jellyfin:8096';
+    (authenticateByName as jest.Mock).mockResolvedValue({ jellyfinUserId: 'jf-1', name: 'Chris', isAdmin: true });
+    mockPrisma.user.findUnique.mockResolvedValue({ id: 5, jellyfinUserId: 'jf-1' });
+
+    await login('chris', 'pw');
+
+    expect(authenticateByName).toHaveBeenCalledWith('http://jellyfin:8096', 'chris', 'pw');
+  });
+
+  it('prefers the Settings URL over the env fallback once configured', async () => {
+    mockPrisma.settings.findUnique.mockResolvedValue({ id: 1, jellyfinUrl: 'http://jf-db' });
+    process.env.JELLYFIN_URL = 'http://jf-env';
+    (authenticateByName as jest.Mock).mockResolvedValue({ jellyfinUserId: 'jf-1', name: 'Chris', isAdmin: true });
+    mockPrisma.user.findUnique.mockResolvedValue({ id: 5, jellyfinUserId: 'jf-1' });
+
+    await login('chris', 'pw');
+
+    expect(authenticateByName).toHaveBeenCalledWith('http://jf-db', 'chris', 'pw');
   });
 
   it('links an existing user and opens a session', async () => {

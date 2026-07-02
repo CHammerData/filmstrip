@@ -23,11 +23,19 @@ export type SessionWithUser = Session & { user: User };
  */
 export async function login(username: string, password: string): Promise<AuthResult> {
   const settings = await prisma.settings.findUnique({ where: { id: 1 } });
-  if (!settings?.jellyfinUrl) {
-    throw new Error('Jellyfin is not configured. Set jellyfinUrl in Settings before logging in.');
+
+  // Bootstrap fallback (gui mode): a fresh deploy has no Settings.jellyfinUrl yet, but login needs a
+  // Jellyfin server to authenticate against — and the Settings page that sets it is behind login.
+  // JELLYFIN_URL from env breaks that chicken-and-egg for the first sign-in; once an admin saves
+  // the URL in Settings, the DB value takes precedence.
+  const jellyfinUrl = settings?.jellyfinUrl || process.env.JELLYFIN_URL;
+  if (!jellyfinUrl) {
+    throw new Error(
+      'Jellyfin is not configured. Set jellyfinUrl in Settings (or the JELLYFIN_URL env var) before logging in.'
+    );
   }
 
-  const identity = await authenticateByName(settings.jellyfinUrl, username, password);
+  const identity = await authenticateByName(jellyfinUrl, username, password);
   const user = await findOrCreateUser(identity.jellyfinUserId, identity.name);
 
   const token = crypto.randomBytes(32).toString('hex');

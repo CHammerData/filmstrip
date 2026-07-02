@@ -76,12 +76,18 @@ function extractImdbId($: cheerio.CheerioAPI): string|null {
     return imdbMatch[1];
 }
 
-function extractLetterboxdId($: cheerio.CheerioAPI): number {
-    const filmId = $('.film-poster img').closest('[data-film-id]').attr('data-film-id');
+function extractLetterboxdId($: cheerio.CheerioAPI): number|null {
+    // Letterboxd dropped data-film-id from the film-poster markup; fall back to any element
+    // still carrying it. This id is best-effort metadata (never persisted; films are keyed by
+    // tmdbId), so a miss must NOT be fatal — otherwise one markup change breaks every sync.
+    const filmId =
+        $('.film-poster img').closest('[data-film-id]').attr('data-film-id') ??
+        $('[data-film-id]').first().attr('data-film-id');
     if (!filmId) {
-        throw new Error('Could not find Letterboxd film ID');
+        logger.debug('Could not find Letterboxd film ID; continuing (not required downstream).');
+        return null;
     }
-    
+
     return parseInt(filmId, 10);
 }
 

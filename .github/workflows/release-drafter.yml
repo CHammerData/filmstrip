@@ -1,9 +1,8 @@
 name: Release Drafter
 
+# DISABLED for now: drafting releases is premature pre-1.0. Manual-only.
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 permissions:
   contents: read

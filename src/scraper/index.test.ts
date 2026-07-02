@@ -11,13 +11,6 @@ jest.mock('../util/logger', () => ({
   error: jest.fn(),
 }));
 
-// Mock the env module
-jest.mock('../util/env', () => ({
-  LETTERBOXD_URL: 'https://letterboxd.com/user/watchlist',
-  LETTERBOXD_TAKE_AMOUNT: undefined,
-  LETTERBOXD_TAKE_STRATEGY: undefined,
-}));
-
 // Mock the ListScraper
 jest.mock('./list');
 

@@ -1,0 +1,58 @@
+# Local dev / demo stack: filmstrip built from source, wired to throwaway Jellyfin + Radarr so
+# you can click through the real UI. NOT for production — the deployed service belongs in the
+# Home_Lab_Setup compose. After `up`, run scripts/dev-setup.sh to finish Jellyfin's first-run
+# wizard and seed filmstrip (compose alone can't do those imperative steps).
+#
+#   docker compose -f docker-compose.dev.yml up -d --build
+#   bash scripts/dev-setup.sh          # Git Bash on Windows
+#   # open http://localhost:3000  ->  log in  admin / DemoPass123!
+#
+#   docker compose -f docker-compose.dev.yml down       # stop (keeps data volumes)
+#   docker compose -f docker-compose.dev.yml down -v     # stop + wipe volumes (clean slate)
+name: filmstrip-dev
+
+services:
+  jellyfin:
+    image: lscr.io/linuxserver/jellyfin:latest
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+    ports:
+      - "8096:8096"
+    volumes:
+      - jellyfin-config:/config
+
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+      # Pre-set a known API key so dev-setup.sh and filmstrip can talk to Radarr without the UI.
+      # dev-setup.sh reads this value straight from the container, so it can't drift.
+      - RADARR__AUTH__APIKEY=0123456789abcdef0123456789abcdef
+      - RADARR__AUTH__METHOD=None
+    ports:
+      - "7878:7878"
+    volumes:
+      - radarr-config:/config
+
+  filmstrip:
+    build: .
+    environment:
+      # development => the session cookie isn't marked Secure, so login works over http://localhost.
+      - NODE_ENV=development
+      - PORT=3000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - jellyfin
+      - radarr
+    volumes:
+      - filmstrip-config:/config
+
+volumes:
+  jellyfin-config:
+  radarr-config:
+  filmstrip-config:

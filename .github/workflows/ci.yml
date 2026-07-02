@@ -4,26 +4,19 @@ on:
   push:
     branches:
       - main
+      - 'feat/**'
       - 'feature/**'
       - 'defect/**'
+      - 'fix/**'
   pull_request:
     branches:
       - main
-  release:
-    types: [published]
 
 jobs:
   build-and-test:
     permissions:
       contents: read
-      pull-requests: write
     uses: ./.github/workflows/build-and-test.yml
     secrets: inherit
 
-  docker:
-    needs: build-and-test
-    permissions:
-      contents: read
-      packages: write
-    uses: ./.github/workflows/docker.yml
-    secrets: inherit
+  # Docker build/push is intentionally disabled until M5 (see docker.yml).

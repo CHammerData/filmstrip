@@ -1,35 +1,20 @@
 require('dotenv').config();
 
-
-import env from './util/env';
 import logger from './util/logger';
-import { fetchMoviesFromUrl } from './scraper';
-import { upsertMovies } from './api/radarr';
+import { startScheduler } from './scheduler';
+import { createApp } from './server/app';
 
-function startScheduledMonitoring(): void {
-  const intervalMs = env.CHECK_INTERVAL_MINUTES * 60 * 1000;
+/** Process-level config (allowed from env, unlike app config which lives in the DB). */
+const PORT = Number(process.env.PORT) || 3000;
 
-  logger.info(`Starting scheduled monitoring. Will check every ${env.CHECK_INTERVAL_MINUTES} minutes.`);
+export async function main(): Promise<void> {
+  startScheduler();
 
-  // Run immediately on startup
-  run();
-
-  // Then run on interval
-  setInterval(async () => {
-    await run();
-  }, intervalMs);
+  const app = createApp();
+  app.listen(PORT, () => {
+    logger.info(`API listening on http://localhost:${PORT} (routes under /api).`);
+  });
 }
-
-async function run() {
-  const movies = await fetchMoviesFromUrl(env.LETTERBOXD_URL);
-  await upsertMovies(movies);
-}
-
-export async function main() {
-  startScheduledMonitoring();
-}
-
-export { startScheduledMonitoring };
 
 // Only run main if this file is executed directly
 if (require.main === module) {

@@ -134,11 +134,14 @@ describe('movie scraper', () => {
       );
     });
 
-    it('should throw error when Letterboxd film ID is missing', async () => {
+    it('returns a null id (not a throw) when the Letterboxd film ID is missing', async () => {
+      // The film id is best-effort metadata; a missing one must not fail the scrape, since the
+      // rest (name, tmdbId) is what Filmstrip actually uses.
       const mockHtml = `
         <html>
           <body>
-            <h1 class="primaryname">Broken Film</h1>
+            <span class="primaryname">Broken Film</span>
+            <a data-track-action="TMDB" href="https://www.themoviedb.org/movie/999/">TMDB</a>
           </body>
         </html>
       `;
@@ -148,9 +151,10 @@ describe('movie scraper', () => {
         text: async () => mockHtml,
       });
 
-      await expect(getMovie('/film/broken-film/')).rejects.toThrow(
-        'Could not find Letterboxd film ID'
-      );
+      const movie = await getMovie('/film/broken-film/');
+      expect(movie.id).toBeNull();
+      expect(movie.tmdbId).toBe('999');
+      expect(movie.name).toBe('Broken Film');
     });
 
     it('should construct full URL from relative link', async () => {

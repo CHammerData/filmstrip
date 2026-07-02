@@ -1,7 +1,7 @@
 # Filmstrip
 
 Sync Letterboxd watchlists and lists into [Radarr](https://radarr.video/) — **multi-list,
-multi-user, managed from one place** instead of one container per list.
+multi-user, managed from one place**
 
 Point Filmstrip at any number of public Letterboxd lists (watchlists, custom lists, actor/director
 filmographies, and more). It scrapes each on a schedule, adds the films to Radarr — tagged by whose
@@ -25,6 +25,8 @@ queued for your review rather than silently deleted.
 | Removals | — | Falls-off-list films queued for review, never auto-deleted |
 | Interface | Logs only | Web GUI (Jellyfin login), REST API, and a CLI |
 | Extras | — | Optional watched-state filtering + Jellyfin collections |
+
+If only looking to sync your watchlist or a singular list [lettarrboxd](https://github.com/ryanpag3/lettarrboxd) is the proper choice.
 
 ## Quick start
 

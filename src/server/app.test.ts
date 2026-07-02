@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 
 const mockPrisma = {
+  $queryRaw: jest.fn(),
   settings: { findUnique: jest.fn(), create: jest.fn(), update: jest.fn() },
   user: { findMany: jest.fn(), findUnique: jest.fn(), create: jest.fn(), update: jest.fn(), delete: jest.fn() },
   list: { findMany: jest.fn(), findUnique: jest.fn(), create: jest.fn(), update: jest.fn(), delete: jest.fn() },
@@ -31,7 +32,7 @@ jest.mock('../auth', () => ({
 jest.mock('../util/logger', () => ({ debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 
 import request from 'supertest';
-import { createApp } from './app';
+import { createApp, createHeadlessApp } from './app';
 import { syncListById, syncAll, syncDue } from '../scheduler';
 import { approveDeletion, keepDeletion, deleteList } from '../reconcile';
 import { validateSession, login, logout } from '../auth';
@@ -51,6 +52,7 @@ function knownError(code: string): Prisma.PrismaClientKnownRequestError {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockPrisma.$queryRaw.mockResolvedValue([{ '1': 1 }]);
   (validateSession as jest.Mock).mockImplementation(async (token: string) => {
     if (token === 'admin') return { id: 1, token, userId: 1, isAdmin: true, user: adminUser };
     if (token === 'user') return { id: 2, token, userId: 2, isAdmin: false, user: regularUser };
@@ -59,10 +61,41 @@ beforeEach(() => {
 });
 
 describe('GET /api/health (public)', () => {
-  it('returns ok without a session', async () => {
+  it('returns ok + version/mode without a session when the DB is reachable', async () => {
     const res = await request(app).get('/api/health');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ status: 'ok' });
+    expect(res.body).toMatchObject({ status: 'ok', mode: 'gui' });
+    expect(res.body.version).toEqual(expect.any(String));
+    expect(res.body.uptime).toEqual(expect.any(Number));
+  });
+
+  it('returns 503 degraded when the DB probe fails', async () => {
+    mockPrisma.$queryRaw.mockRejectedValueOnce(new Error('db down'));
+    const res = await request(app).get('/api/health');
+    expect(res.status).toBe(503);
+    expect(res.body).toMatchObject({ status: 'degraded', mode: 'gui' });
+  });
+});
+
+describe('headless app', () => {
+  const headless = createHeadlessApp();
+
+  it('serves /api/health with mode headless', async () => {
+    const res = await request(headless).get('/api/health');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ status: 'ok', mode: 'headless' });
+  });
+
+  it('404s auth-gated routes (they are not mounted — no SPA, no auth)', async () => {
+    const res = await request(headless).get('/api/lists');
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Not found.' });
+  });
+
+  it('404s non-api paths (no SPA)', async () => {
+    const res = await request(headless).get('/');
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Not found.' });
   });
 });
 

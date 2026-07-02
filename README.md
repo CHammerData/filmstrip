@@ -192,7 +192,7 @@ forbidden, 404 missing, 409 conflict).
 
 | Method + path | Purpose |
 | :-- | :-- |
-| `GET /api/health` | Liveness check (public) |
+| `GET /api/health` | Liveness check (public) — `{status, version, mode, uptime}`; `200` when the DB is reachable, `503` (`status:"degraded"`) when it isn't |
 | `POST /api/auth/login` \| `/logout`, `GET /api/auth/me` | Jellyfin login → session cookie; current user |
 | `GET/PATCH /api/settings` | The singleton Radarr/Jellyfin connection + global defaults |
 | `GET/POST /api/users`, `GET/PATCH/DELETE /api/users/:id` | Manage users |
@@ -232,21 +232,64 @@ npm run prisma:generate   # regenerate the client
 ## Docker
 
 The multi-stage [`Dockerfile`](./Dockerfile) builds the SPA and backend, then runs one Node process
-that applies pending migrations (`prisma migrate deploy`) and serves the SPA + `/api` on port 3000.
-The SQLite DB lives at `/config/filmstrip.db` — mount `/config` on a volume to persist it.
+that applies pending migrations (`prisma migrate deploy`) and starts the scheduler + an HTTP server.
+The SQLite DB lives at `/config/filmstrip.db` — mount `/config` on a volume to persist it. The image
+ships a `HEALTHCHECK` that polls `/api/health` (see [above](#rest-api)).
 
 ```bash
-docker build -t filmstrip .
 docker run -d --name filmstrip -p 3000:3000 \
   -v filmstrip-config:/config \
-  filmstrip
+  <namespace>/filmstrip:latest
 # then open http://localhost:3000 and sign in with a Jellyfin account
 ```
 
-`DATABASE_URL` defaults to `file:/config/filmstrip.db` and `PORT` to `3000` inside the image; other
-config (Radarr/Jellyfin connections, defaults) is set at runtime via the **Settings** page or the
-`/api/settings` endpoint, not env vars. In the Home Lab this runs as the `filmstrip` service in the
-compose stack (one container, replacing the upstream one-container-per-list model).
+(Or build locally: `docker build -t filmstrip .`.) `DATABASE_URL` defaults to
+`file:/config/filmstrip.db` and `PORT` to `3000` inside the image. In gui mode, Radarr/Jellyfin
+connections and defaults are set at runtime via the **Settings** page or `/api/settings`, not env
+vars. In the Home Lab this runs as the `filmstrip` service in the compose stack (one container,
+replacing the upstream one-container-per-list model).
+
+### Run modes: gui vs headless
+
+`FILMSTRIP_MODE` (default `gui`) selects what the container runs:
+
+- **`gui`** — serves the React SPA + the full auth-gated `/api`. Configure everything through the web
+  UI after signing in with a Jellyfin account. This is the default.
+- **`headless`** — no UI and no auth: just the sync scheduler plus `/api/health` (so the
+  `HEALTHCHECK` still works). There's no GUI to configure through, so env vars are the source of
+  truth — on every boot the container (re)seeds the DB from the seed variables (see
+  [`.env.example`](./.env.example)). This is the closest analogue to upstream lettarrboxd's
+  single-list daemon; run one container per list, or seed several lists via the CLI.
+
+```bash
+docker run -d --name filmstrip \
+  -e FILMSTRIP_MODE=headless \
+  -e RADARR_API_URL=http://radarr:7878 -e RADARR_API_KEY=... \
+  -e RADARR_QUALITY_PROFILE=HD-1080p \
+  -e LETTERBOXD_URL=https://letterboxd.com/yourname/watchlist/ \
+  -e DRY_RUN=false \
+  -v filmstrip-config:/config \
+  <namespace>/filmstrip:latest
+```
+
+## Publishing (maintainers)
+
+Images publish to Docker Hub on **release**. One-time repo setup:
+
+- Variable `DOCKERHUB_NAMESPACE` — your Docker Hub user/org (image becomes
+  `<namespace>/filmstrip`).
+- Secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (a write-scoped access token).
+
+Cut a release:
+
+1. Bump `version` in [`package.json`](./package.json) to `X.Y.Z` and commit.
+2. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+3. Publish the GitHub Release for that tag (release-drafter drafts the notes). Publishing fires
+   [`docker.yml`](./.github/workflows/docker.yml), which verifies the tag matches `package.json`,
+   builds `linux/amd64,linux/arm64`, and pushes `vX.Y.Z`, `vX.Y`, `vX`, and `latest`. The running
+   version is stamped into the image (OCI labels + `FILMSTRIP_VERSION`) and reported by
+   `/api/health`. [`docker-hub-sync.yml`](./.github/workflows/docker-hub-sync.yml) then syncs this
+   README to the Docker Hub repo description. Both are also runnable via **workflow_dispatch**.
 
 ### Local dev stack (filmstrip + Jellyfin + Radarr)
 

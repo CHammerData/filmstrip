@@ -1,8 +1,11 @@
 name: Sync README to Docker Hub
 
-# DISABLED until M5. Manual-only. The repository below still points at upstream's
-# Docker Hub repo and needs DOCKERHUB_* secrets — update both before re-enabling.
+# Pushes README.md to the Docker Hub repo's description. Runs after a release (so the published
+# image's docs stay current) and on demand. Requires the same Docker Hub config as docker.yml:
+# DOCKERHUB_NAMESPACE (variable), DOCKERHUB_USERNAME / DOCKERHUB_TOKEN (secrets).
 on:
+  release:
+    types: [published]
   workflow_dispatch:
 
 jobs:
@@ -17,6 +20,6 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: ryanpage/lettarrboxd
+          repository: ${{ vars.DOCKERHUB_NAMESPACE }}/filmstrip
           readme-filepath: ./README.md
           short-description: ${{ github.event.repository.description }}

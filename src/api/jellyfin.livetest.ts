@@ -14,6 +14,7 @@
  */
 import {
   createJellyfinClient,
+  getUsers,
   getWatchedTmdbIds,
   getAllMovieProviderIds,
   findCollectionByName,
@@ -39,6 +40,17 @@ const COLLECTION_NAME = 'Filmstrip Live Test Collection';
   it('lists an empty movie library without erroring', async () => {
     const items = await getAllMovieProviderIds(client);
     expect(items).toEqual([]);
+  });
+
+  it('lists Jellyfin accounts for the pick-a-user dropdown', async () => {
+    // The workflow's setup wizard creates a single admin account ("admin").
+    const users = await getUsers(client);
+    expect(users.length).toBeGreaterThan(0);
+
+    const admin = users.find((u) => u.name === 'admin');
+    expect(admin).toBeDefined();
+    expect(admin!.id).toBeTruthy();
+    expect(admin!.isAdmin).toBe(true);
   });
 
   it('resolves the admin user id and reports an empty watched set', async () => {

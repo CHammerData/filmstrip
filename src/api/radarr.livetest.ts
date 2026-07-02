@@ -9,9 +9,12 @@
 import {
   createRadarrClient,
   getQualityProfileId,
+  getQualityProfiles,
   getRootFolder,
+  getRootFolders,
   getAllRequiredTagIds,
   getAllTags,
+  getAllMovies,
   addMovie,
   getMovieById,
   setMonitored,
@@ -41,6 +44,26 @@ const TMDB_ID = 550;
 
     rootFolderPath = (await getRootFolder(client))!;
     expect(rootFolderPath).toBeTruthy();
+  });
+
+  it('lists quality profiles and root folders for the settings dropdowns', async () => {
+    const profiles = await getQualityProfiles(client);
+    expect(profiles.length).toBeGreaterThan(0);
+    // Every entry is a usable {id, name} pair (what the dropdown binds to).
+    for (const p of profiles) {
+      expect(typeof p.id).toBe('number');
+      expect(typeof p.name).toBe('string');
+      expect(p.name.length).toBeGreaterThan(0);
+    }
+
+    const folders = await getRootFolders(client);
+    expect(folders.length).toBeGreaterThan(0);
+    // The workflow seeds /movies as a root folder.
+    expect(folders.some((f) => f.path === '/movies')).toBe(true);
+    for (const f of folders) {
+      expect(typeof f.id).toBe('number');
+      expect(typeof f.path).toBe('string');
+    }
   });
 
   it('creates and reuses a tag', async () => {
@@ -92,6 +115,13 @@ const TMDB_ID = 550;
     expect(movie).not.toBeNull();
     expect(movie!.monitored).toBe(true);
     expect(movie!.tmdbId).toBe(TMDB_ID);
+  });
+
+  it('returns the added movie in the full movie list (Movies view enrichment)', async () => {
+    const movies = await getAllMovies(client);
+    const match = movies.find((m) => m.tmdbId === TMDB_ID);
+    expect(match).toBeDefined();
+    expect(match!.id).toBe(radarrMovieId);
   });
 
   it('unmonitors the movie via a full-resource PUT', async () => {

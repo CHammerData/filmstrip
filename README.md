@@ -70,7 +70,10 @@ volumes:
 `FILMSTRIP_MODE` (default `gui`) selects what the container runs:
 
 - **`gui`** *(default)* — serves the React web UI + the full API. Configure everything through the
-  UI after signing in with Jellyfin.
+  UI after signing in with Jellyfin. **First-login bootstrap:** on a brand-new deploy there's no
+  Jellyfin URL in the DB yet, and the Settings page that sets it is behind login — so set
+  `JELLYFIN_URL` in the environment to enable that first sign-in. Once an admin saves the URL in
+  Settings, the DB value wins and the env var is ignored.
 - **`headless`** — no UI and no login: just the sync scheduler plus `/api/health`. There's no GUI to
   configure through, so **environment variables are the source of truth** — on every boot the
   container (re)seeds its database from the seed variables below. This is the closest analogue to

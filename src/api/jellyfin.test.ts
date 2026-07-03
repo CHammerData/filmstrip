@@ -56,14 +56,41 @@ describe('jellyfin API', () => {
       expect(identity.isAdmin).toBe(false);
     });
 
-    it('throws when no user comes back', async () => {
+    it('classifies an empty response body as bad-response', async () => {
       mockAxiosInstance.post.mockResolvedValueOnce({ data: {} });
-      await expect(authenticateByName('http://localhost:8096', 'x', 'y')).rejects.toThrow(/no user/i);
+      await expect(authenticateByName('http://localhost:8096', 'x', 'y')).rejects.toMatchObject({
+        name: 'JellyfinAuthError',
+        kind: 'bad-response',
+      });
     });
 
-    it('propagates an auth failure', async () => {
-      mockAxiosInstance.post.mockRejectedValueOnce(new Error('Request failed with status code 401'));
-      await expect(authenticateByName('http://localhost:8096', 'x', 'bad')).rejects.toThrow();
+    it('classifies a 401 as bad-credentials', async () => {
+      mockAxiosInstance.post.mockRejectedValueOnce({ response: { status: 401 } });
+      await expect(authenticateByName('http://localhost:8096', 'x', 'bad')).rejects.toMatchObject({
+        kind: 'bad-credentials',
+        message: 'Invalid Jellyfin credentials.',
+      });
+    });
+
+    it('classifies a non-401 HTTP status as bad-response', async () => {
+      mockAxiosInstance.post.mockRejectedValueOnce({ response: { status: 500 } });
+      await expect(authenticateByName('http://localhost:8096', 'x', 'y')).rejects.toMatchObject({
+        kind: 'bad-response',
+      });
+    });
+
+    it('classifies a network error (no response) as unreachable', async () => {
+      mockAxiosInstance.post.mockRejectedValueOnce({ code: 'ECONNREFUSED', message: 'connect ECONNREFUSED' });
+      await expect(authenticateByName('http://localhost:8096', 'x', 'y')).rejects.toMatchObject({
+        kind: 'unreachable',
+      });
+    });
+
+    it('classifies a malformed URL as invalid-url', async () => {
+      mockAxiosInstance.post.mockRejectedValueOnce({ code: 'ERR_INVALID_URL', message: 'Invalid URL' });
+      await expect(authenticateByName('jellyfin.example.com', 'x', 'y')).rejects.toMatchObject({
+        kind: 'invalid-url',
+      });
     });
   });
 

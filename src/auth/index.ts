@@ -2,6 +2,8 @@ import crypto from 'crypto';
 import { Session, User } from '@prisma/client';
 import prisma from '../db/client';
 import { authenticateByName } from '../api/jellyfin';
+import { JellyfinAuthError } from '../api/jellyfin.errors';
+import { isHttpUrl } from '../util/url';
 import logger from '../util/logger';
 
 /** How long a GUI session lives (the "remember me" window). */
@@ -32,6 +34,16 @@ export async function login(username: string, password: string): Promise<AuthRes
   if (!jellyfinUrl) {
     throw new Error(
       'Jellyfin is not configured. Set jellyfinUrl in Settings (or the JELLYFIN_URL env var) before logging in.'
+    );
+  }
+  // Catch a schemeless/malformed URL here so it reports as a configuration problem, not a rejected
+  // password. (A stale DB value or a bad JELLYFIN_URL env can still reach this even after the
+  // Settings route validates new saves.)
+  if (!isHttpUrl(jellyfinUrl)) {
+    throw new JellyfinAuthError(
+      'invalid-url',
+      'The configured Jellyfin URL is invalid — it must include http:// or https://.',
+      `jellyfinUrl="${jellyfinUrl}"`
     );
   }
 

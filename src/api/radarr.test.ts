@@ -92,12 +92,16 @@ describe('radarr API', () => {
       expect(result).toBeNull();
     });
 
-    it('should return null on error', async () => {
-      mockAxiosInstance.get.mockRejectedValueOnce(new Error('Network error'));
+    it('throws a clear error when Radarr is unreachable (not a null "not found")', async () => {
+      mockAxiosInstance.get.mockRejectedValueOnce({ code: 'ECONNREFUSED', message: 'connect ECONNREFUSED' });
 
-      const result = await getQualityProfileId(client, 'HD-1080p');
+      await expect(getQualityProfileId(client, 'HD-1080p')).rejects.toThrow(/cannot reach Radarr/);
+    });
 
-      expect(result).toBeNull();
+    it('throws when Radarr returns a non-list (e.g. an HTML proxy page)', async () => {
+      mockAxiosInstance.get.mockResolvedValueOnce({ data: '<html>login</html>' });
+
+      await expect(getQualityProfileId(client, 'HD-1080p')).rejects.toThrow(/unexpected response/i);
     });
   });
 
@@ -400,14 +404,12 @@ describe('radarr API', () => {
       );
     });
 
-    it('should throw error when quality profile not found', async () => {
+    it('should throw a specific error when the quality profile is not found', async () => {
       mockAxiosInstance.get.mockResolvedValueOnce({
-        data: [],
+        data: [{ id: 1, name: 'SD' }],
       });
 
-      await expect(upsertMovies(client, mockMovies, baseOptions)).rejects.toThrow(
-        'Could not get quality profile ID.'
-      );
+      await expect(upsertMovies(client, mockMovies, baseOptions)).rejects.toThrow(/not found in Radarr/);
     });
 
     it('should throw error when root folder not found', async () => {

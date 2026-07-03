@@ -1,5 +1,6 @@
 import Axios, { AxiosInstance } from 'axios';
 import logger from '../util/logger';
+import { JellyfinAuthError } from './jellyfin.errors';
 
 /** Connection to a single Jellyfin server, authenticated with a server API key. */
 export interface JellyfinConnection {
@@ -43,16 +44,65 @@ export async function authenticateByName(
     },
   });
 
-  const response = await client.post('/Users/AuthenticateByName', { Username: username, Pw: password });
+  let response;
+  try {
+    response = await client.post('/Users/AuthenticateByName', { Username: username, Pw: password });
+  } catch (e) {
+    // Turn a raw axios/URL failure into a classified error the login route can map to an honest
+    // status (bad URL != wrong password != server down).
+    throw classifyAuthError(e, url);
+  }
+
   const user = response.data?.User;
   if (!user?.Id) {
-    throw new Error('Jellyfin authentication returned no user.');
+    throw new JellyfinAuthError(
+      'bad-response',
+      'Jellyfin returned an unexpected response during authentication.',
+      `url="${url}" reason="no User.Id in response"`
+    );
   }
   return {
     jellyfinUserId: user.Id,
     name: user.Name,
     isAdmin: !!user.Policy?.IsAdministrator,
   };
+}
+
+/** Map a thrown fetch/axios error from AuthenticateByName to a classified JellyfinAuthError. */
+function classifyAuthError(e: unknown, url: string): JellyfinAuthError {
+  const err = e as { code?: string; message?: string; response?: { status?: number } };
+  const msg = err?.message ?? String(e);
+
+  // Malformed URL (e.g. schemeless "host.tld" or a bare "host:port") — thrown before any request.
+  if (err?.code === 'ERR_INVALID_URL' || /invalid url/i.test(msg)) {
+    return new JellyfinAuthError(
+      'invalid-url',
+      'The configured Jellyfin URL is invalid — it must include http:// or https://.',
+      `url="${url}"`,
+      e
+    );
+  }
+
+  const status = err?.response?.status;
+  if (status === 401) {
+    return new JellyfinAuthError('bad-credentials', 'Invalid Jellyfin credentials.', `url="${url}"`, e);
+  }
+  if (typeof status === 'number') {
+    return new JellyfinAuthError(
+      'bad-response',
+      'Jellyfin returned an unexpected response during authentication.',
+      `url="${url}" http=${status}`,
+      e
+    );
+  }
+
+  // No HTTP response at all -> couldn't reach the server (DNS failure, connection refused, timeout).
+  return new JellyfinAuthError(
+    'unreachable',
+    'Could not reach the Jellyfin server — check the Jellyfin URL in Settings.',
+    `url="${url}" ${err?.code ?? msg}`,
+    e
+  );
 }
 
 /** A Jellyfin account, for the "pick a user to add" dropdown. */

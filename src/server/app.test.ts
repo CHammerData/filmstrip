@@ -36,6 +36,7 @@ import { createApp, createHeadlessApp } from './app';
 import { syncListById, syncAll, syncDue } from '../scheduler';
 import { approveDeletion, keepDeletion, deleteList } from '../reconcile';
 import { validateSession, login, logout } from '../auth';
+import { JellyfinAuthError } from '../api/jellyfin.errors';
 
 const app = createApp();
 
@@ -117,15 +118,42 @@ describe('auth', () => {
   });
 
   it('POST /api/auth/login maps bad credentials to 401', async () => {
-    (login as jest.Mock).mockRejectedValue(new Error('Request failed with status code 401'));
+    (login as jest.Mock).mockRejectedValue(
+      new JellyfinAuthError('bad-credentials', 'Invalid Jellyfin credentials.')
+    );
     const res = await request(app).post('/api/auth/login').send({ username: 'admin', password: 'bad' });
     expect(res.status).toBe(401);
+    expect(res.body.error).toBe('Invalid Jellyfin credentials.');
+  });
+
+  it('POST /api/auth/login maps an unreachable server to 502 (not a fake 401)', async () => {
+    (login as jest.Mock).mockRejectedValue(
+      new JellyfinAuthError('unreachable', 'Could not reach the Jellyfin server — check the Jellyfin URL in Settings.')
+    );
+    const res = await request(app).post('/api/auth/login').send({ username: 'admin', password: 'pw' });
+    expect(res.status).toBe(502);
+    expect(res.body.error).toMatch(/could not reach/i);
+  });
+
+  it('POST /api/auth/login maps an invalid URL to 400', async () => {
+    (login as jest.Mock).mockRejectedValue(
+      new JellyfinAuthError('invalid-url', 'The configured Jellyfin URL is invalid — it must include http:// or https://.')
+    );
+    const res = await request(app).post('/api/auth/login').send({ username: 'admin', password: 'pw' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/http:\/\//);
   });
 
   it('POST /api/auth/login maps "not configured" to 400', async () => {
     (login as jest.Mock).mockRejectedValue(new Error('Jellyfin is not configured. Set jellyfinUrl in Settings.'));
     const res = await request(app).post('/api/auth/login').send({ username: 'admin', password: 'pw' });
     expect(res.status).toBe(400);
+  });
+
+  it('POST /api/auth/login maps an unexpected error to a logged 500', async () => {
+    (login as jest.Mock).mockRejectedValue(new Error('boom'));
+    const res = await request(app).post('/api/auth/login').send({ username: 'admin', password: 'pw' });
+    expect(res.status).toBe(500);
   });
 
   it('GET /api/auth/me returns the session user', async () => {
@@ -186,6 +214,37 @@ describe('settings (admin)', () => {
     const res = await request(app).patch('/api/settings').set('Cookie', ADMIN).send({ bogus: 1 });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/Validation failed/);
+  });
+
+  it('PATCH rejects a schemeless Radarr URL', async () => {
+    const res = await request(app)
+      .patch('/api/settings')
+      .set('Cookie', ADMIN)
+      .send({ radarrUrl: 'radarr.magi-home.xyz' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/http:\/\//);
+    expect(mockPrisma.settings.update).not.toHaveBeenCalled();
+  });
+
+  it('PATCH accepts a valid http connection URL', async () => {
+    mockPrisma.settings.findUnique.mockResolvedValue({ id: 1 });
+    mockPrisma.settings.update.mockResolvedValue({ id: 1, radarrUrl: 'http://radarr:7878' });
+    const res = await request(app)
+      .patch('/api/settings')
+      .set('Cookie', ADMIN)
+      .send({ radarrUrl: 'http://radarr:7878' });
+    expect(res.status).toBe(200);
+    expect(mockPrisma.settings.update).toHaveBeenCalledWith({
+      where: { id: 1 },
+      data: { radarrUrl: 'http://radarr:7878' },
+    });
+  });
+
+  it('PATCH allows clearing a URL with null', async () => {
+    mockPrisma.settings.findUnique.mockResolvedValue({ id: 1 });
+    mockPrisma.settings.update.mockResolvedValue({ id: 1, jellyfinUrl: null });
+    const res = await request(app).patch('/api/settings').set('Cookie', ADMIN).send({ jellyfinUrl: null });
+    expect(res.status).toBe(200);
   });
 });
 

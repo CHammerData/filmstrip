@@ -2,12 +2,23 @@ import { Router } from 'express';
 import { z } from 'zod';
 import prisma from '../../db/client';
 import { asyncHandler, parseBody } from '../http';
+import { isHttpUrl } from '../../util/url';
+
+// A connection URL: null or empty clears it; anything else must be an absolute http(s) URL. Rejecting
+// a schemeless value here (e.g. "radarr.magi-home.xyz") stops it from silently becoming an "Invalid
+// URL" failure the first time the app calls Radarr/Jellyfin.
+const connectionUrl = z
+  .string()
+  .nullable()
+  .refine((v) => v === null || v.trim() === '' || isHttpUrl(v.trim()), {
+    message: 'must be an absolute URL including http:// or https:// (e.g. http://radarr:7878)',
+  });
 
 const patchSchema = z
   .object({
-    radarrUrl: z.string().nullable(),
+    radarrUrl: connectionUrl,
     radarrApiKey: z.string().nullable(),
-    jellyfinUrl: z.string().nullable(),
+    jellyfinUrl: connectionUrl,
     jellyfinApiKey: z.string().nullable(),
     defaultQualityProfile: z.string().nullable(),
     defaultRootFolderId: z.string().nullable(),

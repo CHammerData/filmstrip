@@ -62,25 +62,47 @@ export function createRadarrClient(conn: RadarrConnection): AxiosInstance {
 }
 
 export async function getQualityProfileId(client: AxiosInstance, profileName: string): Promise<number | null> {
+    logger.debug(`Getting quality profile ID for: ${profileName}`);
+
+    // A failed *request* (unreachable/wrong URL, bad API key, a proxy returning HTML) is a
+    // connection problem — throw a clear error rather than returning null, which the caller would
+    // otherwise report as the misleading "quality profile not found". Only a successful response
+    // that simply lacks the named profile is a genuine null (config) result.
+    let profiles: unknown;
     try {
-        logger.debug(`Getting quality profile ID for: ${profileName}`);
-
         const response = await client.get('/api/v3/qualityprofile');
-        const profiles = response.data;
-
-        const profile = profiles.find((p: any) => p.name === profileName);
-        if (profile) {
-            logger.debug(`Found quality profile: ${profileName} (ID: ${profile.id})`);
-            return profile.id;
-        } else {
-            logger.error(`Quality profile not found: ${profileName}`);
-            logger.debug('Available profiles:', profiles.map((p: any) => p.name));
-            return null;
-        }
+        profiles = response.data;
     } catch (error) {
-        logger.error('Error getting quality profiles:', error);
-        return null;
+        throw radarrRequestError('fetch quality profiles from Radarr', error, client);
     }
+
+    if (!Array.isArray(profiles)) {
+        throw new Error(
+            'Radarr returned an unexpected response for quality profiles — check the Radarr URL and API key.'
+        );
+    }
+
+    const profile = profiles.find((p: any) => p.name === profileName);
+    if (profile) {
+        logger.debug(`Found quality profile: ${profileName} (ID: ${profile.id})`);
+        return profile.id;
+    }
+
+    logger.warn(
+        `Quality profile "${profileName}" not found in Radarr. Available: ${profiles.map((p: any) => p.name).join(', ') || '(none)'}`
+    );
+    return null;
+}
+
+/** Turn a failed Radarr request into a clear, cause-bearing Error for the sync log. */
+function radarrRequestError(action: string, error: unknown, client: AxiosInstance): Error {
+    const err = error as { code?: string; message?: string; response?: { status?: number } };
+    const baseURL = (client as { defaults?: { baseURL?: string } })?.defaults?.baseURL;
+    const at = baseURL ? ` at ${baseURL}` : '';
+    if (err?.response?.status) {
+        return new Error(`Could not ${action}: Radarr${at} returned HTTP ${err.response.status} (check the URL and API key).`);
+    }
+    return new Error(`Could not ${action}: cannot reach Radarr${at} (${err?.code ?? err?.message ?? 'unknown error'}).`);
 }
 
 /** All quality profiles in Radarr (id + name), for populating the list-settings dropdowns. */
@@ -225,7 +247,7 @@ export async function upsertMovies(
     const qualityProfileId = await getQualityProfileId(client, options.qualityProfile);
 
     if (!qualityProfileId) {
-        throw new Error('Could not get quality profile ID.');
+        throw new Error(`Quality profile "${options.qualityProfile}" not found in Radarr — the name must match exactly.`);
     }
 
     const rootFolderPath = !options.rootFolderId

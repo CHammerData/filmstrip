@@ -27,14 +27,14 @@ async function resolveJellyfinItemIds(client: AxiosInstance, movies: Movie[]): P
   const all = await getAllMovieProviderIds(client);
   const byTmdb = new Map(all.filter((i) => i.tmdbId !== null).map((i) => [i.tmdbId as number, i.id]));
 
-  await Promise.all(
-    unresolved.map(async (m) => {
-      const itemId = byTmdb.get(m.tmdbId);
-      if (!itemId) return;
-      result.set(m.tmdbId, itemId);
-      await prisma.movie.update({ where: { id: m.id }, data: { jellyfinItemId: itemId } });
-    })
-  );
+  // Sequential: SQLite is single-writer, so a Promise.all fan-out of these caching writes can
+  // contend for the write lock on a large collection (see scheduler's upsert loop).
+  for (const m of unresolved) {
+    const itemId = byTmdb.get(m.tmdbId);
+    if (!itemId) continue;
+    result.set(m.tmdbId, itemId);
+    await prisma.movie.update({ where: { id: m.id }, data: { jellyfinItemId: itemId } });
+  }
 
   return result;
 }

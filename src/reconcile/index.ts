@@ -108,14 +108,14 @@ export async function reconcileList(list: ListWithUser, currentTmdbIds: Set<numb
   const droppedOff = existing.filter((lm) => !currentTmdbIds.has(lm.movie.tmdbId));
   if (droppedOff.length === 0) return;
 
-  await Promise.all(
-    droppedOff.map((lm) =>
-      prisma.listMovie.update({
-        where: { id: lm.id },
-        data: { presentOnList: false, removedFromListAt: new Date() },
-      })
-    )
-  );
+  // Sequential: SQLite is single-writer, so fanning these updates out with Promise.all can contend
+  // for the write lock on a list that dropped many films at once (see scheduler's upsert loop).
+  for (const lm of droppedOff) {
+    await prisma.listMovie.update({
+      where: { id: lm.id },
+      data: { presentOnList: false, removedFromListAt: new Date() },
+    });
+  }
 
   for (const lm of droppedOff) {
     try {

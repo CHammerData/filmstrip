@@ -93,27 +93,29 @@ export async function syncList(list: ListWithUser): Promise<SyncResult> {
     // Movies without a tmdbId have no stable identity and are never recorded.
     if (!config.dryRun) {
       const rows = summary.results.filter((r) => shouldRecord(r.status) && r.movie.tmdbId);
-      await Promise.all(
-        rows.map(async (r) => {
-          const tmdbId = parseInt(r.movie.tmdbId!);
-          const movie = await prisma.movie.upsert({
-            where: { tmdbId },
-            update: r.radarrMovieId ? { radarrMovieId: r.radarrMovieId } : {},
-            create: {
-              tmdbId,
-              title: r.movie.name,
-              year: r.movie.publishedYear ?? null,
-              addedByFilmstrip: r.status === 'added',
-              radarrMovieId: r.radarrMovieId ?? null,
-            },
-          });
-          await prisma.listMovie.upsert({
-            where: { listId_movieId: { listId: list.id, movieId: movie.id } },
-            update: { presentOnList: true, status: r.status, lastSeenAt: new Date() },
-            create: { listId: list.id, movieId: movie.id, status: r.status },
-          });
-        })
-      );
+      // Persist sequentially: SQLite is single-writer, so a Promise.all fan-out here made a large
+      // list (e.g. a ~79-film watchlist -> ~158 concurrent writes) contend for the write lock until
+      // Prisma gave up with "Socket timeout". Sequential upserts on a local file are milliseconds
+      // each and never contend.
+      for (const r of rows) {
+        const tmdbId = parseInt(r.movie.tmdbId!);
+        const movie = await prisma.movie.upsert({
+          where: { tmdbId },
+          update: r.radarrMovieId ? { radarrMovieId: r.radarrMovieId } : {},
+          create: {
+            tmdbId,
+            title: r.movie.name,
+            year: r.movie.publishedYear ?? null,
+            addedByFilmstrip: r.status === 'added',
+            radarrMovieId: r.radarrMovieId ?? null,
+          },
+        });
+        await prisma.listMovie.upsert({
+          where: { listId_movieId: { listId: list.id, movieId: movie.id } },
+          update: { presentOnList: true, status: r.status, lastSeenAt: new Date() },
+          create: { listId: list.id, movieId: movie.id, status: r.status },
+        });
+      }
 
       // Reconcile: anything that fell off this list since the last sync runs through the
       // keeper-rule (DESIGN.md §5). Based on the raw scrape, not the unwatchedOnly-filtered

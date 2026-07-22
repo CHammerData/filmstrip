@@ -1,12 +1,22 @@
 import { Settings, List, User, Movie, DeletionRequest } from '@prisma/client';
 
-const mockPrisma = {
+const mockPrisma: any = {
   settings: { findUnique: jest.fn() },
   user: { findMany: jest.fn() },
   list: { findMany: jest.fn(), findUnique: jest.fn(), delete: jest.fn() },
   movie: { findUnique: jest.fn(), update: jest.fn(), updateMany: jest.fn() },
   listMovie: { findMany: jest.fn(), findFirst: jest.fn(), update: jest.fn() },
-  deletionRequest: { findFirst: jest.fn(), create: jest.fn(), findUnique: jest.fn(), update: jest.fn() },
+  deletionRequest: {
+    findFirst: jest.fn(),
+    findMany: jest.fn(),
+    create: jest.fn(),
+    findUnique: jest.fn(),
+    update: jest.fn(),
+    deleteMany: jest.fn(),
+  },
+  // evaluateForDeletion re-checks-and-creates inside a transaction to close a race window; running
+  // the callback against mockPrisma itself keeps every mock (findFirst, create, ...) shared as-is.
+  $transaction: jest.fn((cb: (tx: unknown) => unknown) => cb(mockPrisma)),
 };
 
 jest.mock('../db/client', () => ({ __esModule: true, default: mockPrisma }));
@@ -115,6 +125,7 @@ describe('reconcileList', () => {
     mockPrisma.listMovie.update.mockResolvedValue({});
     mockPrisma.listMovie.findFirst.mockResolvedValue(null); // nothing else wants it, by default
     mockPrisma.deletionRequest.findFirst.mockResolvedValue(null); // no existing pending request
+    mockPrisma.deletionRequest.findMany.mockResolvedValue([]); // no stale left_list requests, by default
     mockPrisma.deletionRequest.create.mockResolvedValue({});
     (getMovieById as jest.Mock).mockResolvedValue({
       id: 500,
@@ -202,6 +213,48 @@ describe('reconcileList', () => {
       where: { id: 2 },
       data: { presentOnList: false, removedFromListAt: expect.any(Date) },
     });
+  });
+
+  it('cancels a stale pending left_list request for a film confirmed still on the list, and re-monitors it', async () => {
+    mockPrisma.listMovie.findMany.mockResolvedValue([
+      { id: 1, movieId: 1, presentOnList: true, movie: { tmdbId: 100 } },
+    ]);
+    mockPrisma.deletionRequest.findMany.mockResolvedValue([
+      { id: 9, movieId: 1, status: 'pending', reason: 'left_list' },
+    ]);
+    mockPrisma.movie.findUnique.mockResolvedValue(makeMovie());
+
+    await reconcileList(makeList(), new Set([100]));
+
+    expect(setMonitored).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ id: 500 }), true);
+    expect(mockPrisma.deletionRequest.deleteMany).toHaveBeenCalledWith({ where: { id: { in: [9] } } });
+  });
+
+  it('only ever looks for left_list pending requests when checking for stale ones', async () => {
+    mockPrisma.listMovie.findMany.mockResolvedValue([
+      { id: 1, movieId: 1, presentOnList: true, movie: { tmdbId: 100 } },
+    ]);
+
+    await reconcileList(makeList(), new Set([100]));
+
+    expect(mockPrisma.deletionRequest.findMany).toHaveBeenCalledWith({
+      where: { movieId: 1, status: 'pending', reason: 'left_list' },
+    });
+  });
+
+  it('does not create a duplicate DeletionRequest if one appears between the early check and the transaction', async () => {
+    mockPrisma.listMovie.findMany.mockResolvedValue([
+      { id: 1, movieId: 1, presentOnList: true, movie: { tmdbId: 100 } },
+    ]);
+    mockPrisma.movie.findUnique.mockResolvedValue(makeMovie());
+    mockPrisma.deletionRequest.findFirst
+      .mockResolvedValueOnce(null) // early check: nothing pending yet
+      .mockResolvedValueOnce({ id: 99, status: 'pending' }); // re-check inside the transaction: lost the race
+
+    await reconcileList(makeList(), new Set());
+
+    expect(setMonitored).toHaveBeenCalled(); // the unmonitor call itself is harmless/idempotent
+    expect(mockPrisma.deletionRequest.create).not.toHaveBeenCalled();
   });
 
   it('does not open a DeletionRequest for a film not added by Filmstrip', async () => {

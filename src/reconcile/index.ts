@@ -83,9 +83,20 @@ async function evaluateForDeletion(movieId: number, candidate: DeletionCandidate
   }
 
   await setMonitored(client, radarrMovie, false);
-  await prisma.deletionRequest.create({
-    data: { movieId, reason: candidate.reason, triggeredByListId: candidate.triggeredByListId, status: 'pending' },
+  // Re-check-and-create atomically: the gap between the alreadyPending check above and here
+  // spans several awaited Radarr calls, wide enough for two concurrent evaluations of the same
+  // movie (e.g. a manual "sync now" overlapping the scheduler tick) to both pass the early check
+  // and both create a request. Re-checking inside the transaction closes that window.
+  const created = await prisma.$transaction(async (tx) => {
+    const stillPending = await tx.deletionRequest.findFirst({ where: { movieId, status: 'pending' } });
+    if (stillPending) return false;
+    await tx.deletionRequest.create({
+      data: { movieId, reason: candidate.reason, triggeredByListId: candidate.triggeredByListId, status: 'pending' },
+    });
+    return true;
   });
+  if (!created) return;
+
   const why =
     candidate.reason === 'watched'
       ? 'watched'
@@ -93,6 +104,40 @@ async function evaluateForDeletion(movieId: number, candidate: DeletionCandidate
         ? 'its list was deleted'
         : 'left all lists';
   logger.info(`Marked "${radarrMovie.title}" for deletion review (${why}).`);
+}
+
+/**
+ * A pending left_list request claims a film left every enabled list it was on. If that film is
+ * now confirmed present on a list — because it never really left, or a later scrape corrected an
+ * earlier bad one — the claim no longer holds. Cancel the request and re-monitor in Radarr
+ * (evaluateForDeletion unmonitored it when the request was raised). Sweeps every matching pending
+ * request for the movie, not just one, so a duplicate left over from before this existed also
+ * clears in one pass. Never throws — logged and skipped on failure.
+ */
+async function cancelStaleLeftListRequests(movieId: number): Promise<void> {
+  const pending = await prisma.deletionRequest.findMany({
+    where: { movieId, status: 'pending', reason: 'left_list' },
+  });
+  if (pending.length === 0) return;
+
+  const movie = await prisma.movie.findUnique({ where: { id: movieId } });
+  if (movie?.radarrMovieId) {
+    try {
+      const client = await radarrClientFromSettings();
+      const radarrMovie = await getMovieById(client, movie.radarrMovieId);
+      if (radarrMovie) await setMonitored(client, radarrMovie, true);
+    } catch (e: any) {
+      logger.error(
+        `Reconcile: failed to re-monitor movie id=${movieId} while cancelling its stale deletion request:`,
+        e?.message ?? e
+      );
+    }
+  }
+
+  await prisma.deletionRequest.deleteMany({ where: { id: { in: pending.map((p) => p.id) } } });
+  logger.info(
+    `Cancelled ${pending.length} stale left_list deletion request(s) for movie id=${movieId} -- confirmed still on a tracked list.`
+  );
 }
 
 // A single scrape that would drop more than half of a list's currently-tracked films (and at
@@ -106,9 +151,12 @@ const MASS_DROP_RATIO = 0.5;
 /**
  * Reconcile one list after a sync: any film previously present that's no longer in this scrape
  * gets presentOnList=false and runs through the keeper-rule; any film previously marked gone
- * that's back in this scrape gets presentOnList restored. Refuses to apply a drop that looks
- * like a broken scrape rather than a real edit (see MASS_DROP_*). Never throws — a failure
- * evaluating one film is logged and the rest still run.
+ * that's back in this scrape gets presentOnList restored, and any pending left_list request whose
+ * claim no longer holds is cancelled — checked for every film confirmed present this run, not
+ * just ones that just returned, so a request left stranded by a past bad scrape (from before this
+ * existed) still self-heals. Refuses to apply a drop that looks like a broken scrape rather than
+ * a real edit (see MASS_DROP_*). Never throws — a failure evaluating one film is logged and the
+ * rest still run.
  */
 export async function reconcileList(list: ListWithUser, currentTmdbIds: Set<number>): Promise<void> {
   const existing = await prisma.listMovie.findMany({
@@ -119,6 +167,7 @@ export async function reconcileList(list: ListWithUser, currentTmdbIds: Set<numb
   const currentlyPresent = existing.filter((lm) => lm.presentOnList);
   const droppedOff = currentlyPresent.filter((lm) => !currentTmdbIds.has(lm.movie.tmdbId));
   const returned = existing.filter((lm) => !lm.presentOnList && currentTmdbIds.has(lm.movie.tmdbId));
+  const stillWanted = existing.filter((lm) => currentTmdbIds.has(lm.movie.tmdbId));
 
   // Sequential: SQLite is single-writer, so fanning these updates out with Promise.all can contend
   // for the write lock on a list with many changes at once (see scheduler's upsert loop).
@@ -127,6 +176,14 @@ export async function reconcileList(list: ListWithUser, currentTmdbIds: Set<numb
       where: { id: lm.id },
       data: { presentOnList: true, removedFromListAt: null, lastSeenAt: new Date() },
     });
+  }
+
+  for (const lm of stillWanted) {
+    try {
+      await cancelStaleLeftListRequests(lm.movieId);
+    } catch (e: any) {
+      logger.error(`Reconcile: failed checking stale deletion requests for movie id=${lm.movieId}:`, e?.message ?? e);
+    }
   }
 
   if (droppedOff.length === 0) return;

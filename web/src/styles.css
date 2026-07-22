@@ -49,6 +49,16 @@ body {
   color: var(--muted);
 }
 
+/* Content links (e.g. a film title linking to its history page) -- distinct from .topbar nav a
+   and button.link, which style navigation/actions rather than in-content references. */
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
 /* Layout */
 .topbar {
   display: flex;

@@ -136,6 +136,33 @@ export interface MovieRow {
   sources: MovieSource[];
 }
 
+export type MovieEventType =
+  | 'seen_on_list'
+  | 'left_list'
+  | 'restored_to_list'
+  | 'radarr_add_failed'
+  | 'added_to_radarr'
+  | 'already_in_radarr'
+  | 'deletion_queued'
+  | 'deletion_queue_cancelled'
+  | 'deleted'
+  | 'kept'
+  | 'revived'
+  | 'backfilled';
+
+export interface MovieHistoryEvent {
+  id: number;
+  type: MovieEventType;
+  detail: string | null;
+  listLabel: string | null;
+  createdAt: string;
+}
+
+export interface MovieHistory {
+  movie: { id: number; tmdbId: number; title: string; year: number | null; state: MovieState };
+  events: MovieHistoryEvent[];
+}
+
 export interface DeletionRequest {
   id: number;
   reason: string;

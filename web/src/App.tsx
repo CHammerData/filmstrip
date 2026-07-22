@@ -5,6 +5,7 @@ import { applyTheme, getInitialTheme, Theme } from './theme';
 import Login from './pages/Login';
 import Lists from './pages/Lists';
 import Movies from './pages/Movies';
+import MovieHistory from './pages/MovieHistory';
 import Users from './pages/Users';
 import Deletions from './pages/Deletions';
 import SyncHistory from './pages/SyncHistory';
@@ -45,6 +46,7 @@ export default function App() {
         <Routes>
           <Route path="/lists" element={<Lists />} />
           <Route path="/movies" element={<Movies />} />
+          <Route path="/movies/:id" element={<MovieHistory />} />
           <Route path="/history" element={<SyncHistory />} />
           {isAdmin && <Route path="/deletions" element={<Deletions />} />}
           {isAdmin && <Route path="/users" element={<Users />} />}

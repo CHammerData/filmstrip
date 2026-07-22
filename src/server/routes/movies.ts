@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import prisma from '../../db/client';
-import { asyncHandler } from '../http';
+import { asyncHandler, notFound, parseId } from '../http';
 import { createRadarrClient, getAllMovies, RadarrMovieResource } from '../../api/radarr';
 import logger from '../../util/logger';
 
@@ -81,6 +81,40 @@ export function moviesRouter(): Router {
       });
 
       res.json(rows);
+    })
+  );
+
+  // A film's full chronological history (DESIGN.md §4): every state transition plus every
+  // per-list seen/left/restored event, oldest first.
+  router.get(
+    '/:id/history',
+    asyncHandler(async (req, res) => {
+      const id = parseId(req.params.id);
+      const movie = await prisma.movie.findUnique({ where: { id } });
+      if (!movie) throw notFound(`Movie id=${id} not found.`);
+
+      const events = await prisma.movieEvent.findMany({
+        where: { movieId: id },
+        include: { list: true },
+        orderBy: { createdAt: 'asc' },
+      });
+
+      res.json({
+        movie: {
+          id: movie.id,
+          tmdbId: movie.tmdbId,
+          title: movie.title,
+          year: movie.year,
+          state: movie.state,
+        },
+        events: events.map((e) => ({
+          id: e.id,
+          type: e.type,
+          detail: e.detail,
+          listLabel: e.list?.label ?? null,
+          createdAt: e.createdAt,
+        })),
+      });
     })
   );
 

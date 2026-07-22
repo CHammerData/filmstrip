@@ -204,6 +204,18 @@ The middleware (`src/server/auth.ts`) gates everything under `/api` except `/api
   quality profile/root, not just a tag.
 - RSS-based scraping where Letterboxd offers it (more robust than HTML).
 - Per-list grace-period auto-approval (§6).
+- **Film state machine + history log.** Today a film's status is inferred by reading across
+  several tables at once (`Movie.addedByFilmstrip`/`pinned`, `ListMovie.presentOnList`/`status`,
+  `DeletionRequest.status`) with no single field answering "what is this film's state right now,"
+  and no per-film chronological record of what's happened to it. Prone to exactly the class of bug
+  fixed in this session twice over (stale/contradictory derived state, e.g. a film simultaneously
+  "on the list" and "queued for deletion because it left the list"). Longer-term direction: give
+  `Movie` one real state — `wanted → added → deletion_queued → (deleted | kept) → wanted → ...` —
+  as the single source of truth, plus an append-only event log per film (added, dropped from list
+  X, queued for deletion, approved/kept, restored, etc.) surfaced on a per-film history page. Would
+  let reconcile/collections/deletion-queue logic all read one state field instead of re-deriving it
+  from table joins, and would make bugs like this immediately visible instead of requiring a
+  targeted SQLite query to notice.
 
 ## 11. Status
 

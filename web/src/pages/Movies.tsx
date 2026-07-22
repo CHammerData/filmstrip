@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { get, MovieRow, RadarrStatus } from '../api';
+import { get, MovieRow, MovieState, RadarrStatus } from '../api';
 import { useLoad } from '../useLoad';
 
 const STATUS_META: Record<RadarrStatus, { label: string; color: string }> = {
@@ -12,12 +12,19 @@ const STATUS_META: Record<RadarrStatus, { label: string; color: string }> = {
 
 const STATUS_FILTERS = ['all', 'downloaded', 'wanted', 'unmonitored', 'not_in_radarr', 'unknown'] as const;
 
-const PROVENANCE_META: Record<'true' | 'false', { label: string; color: string }> = {
-  true: { label: 'Added by Filmstrip', color: 'var(--ok)' },
-  false: { label: 'Pre-existing', color: 'var(--muted)' },
+// A film's lifecycle state (DESIGN.md §10) -- the single source of truth for what Filmstrip is
+// doing (or will never do) with it. pre_existing/wanted are never eligible for the deletion
+// workflow; the rest describe where it sits in that workflow.
+const STATE_META: Record<MovieState, { label: string; color: string }> = {
+  wanted: { label: 'Wanted', color: '#d1a54a' },
+  pre_existing: { label: 'Pre-existing', color: 'var(--muted)' },
+  added: { label: 'Added by Filmstrip', color: 'var(--ok)' },
+  deletion_queued: { label: 'Queued for deletion', color: 'var(--danger)' },
+  deleted: { label: 'Deleted', color: 'var(--muted)' },
+  kept: { label: 'Kept', color: 'var(--ok)' },
 };
 
-const PROVENANCE_FILTERS = ['all', 'true', 'false'] as const;
+const STATE_FILTERS = ['all', 'wanted', 'pre_existing', 'added', 'deletion_queued', 'deleted', 'kept'] as const;
 
 function formatSize(bytes: number): string {
   if (!bytes) return '—';
@@ -38,13 +45,13 @@ function StatusBadge({ status }: { status: RadarrStatus }) {
   );
 }
 
-function ProvenanceBadge({ addedByFilmstrip }: { addedByFilmstrip: boolean }) {
-  const meta = PROVENANCE_META[addedByFilmstrip ? 'true' : 'false'];
+function StateBadge({ state }: { state: MovieState }) {
+  const meta = STATE_META[state];
   return (
     <span
       className="badge"
       style={{ background: 'transparent', border: `1px solid ${meta.color}`, color: meta.color }}
-      title="Whether Filmstrip itself added this film to Radarr, or it already existed -- only films Filmstrip added are ever eligible for its deletion workflow (DESIGN.md §2)."
+      title="This film's lifecycle state -- only added/deletion_queued/deleted/kept were ever eligible for Filmstrip's deletion workflow; pre_existing and wanted never are (DESIGN.md §2, §10)."
     >
       {meta.label}
     </span>
@@ -55,29 +62,29 @@ export default function Movies() {
   const movies = useLoad<MovieRow[]>(() => get('/movies'));
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState<(typeof STATUS_FILTERS)[number]>('all');
-  const [provenance, setProvenance] = useState<(typeof PROVENANCE_FILTERS)[number]>('all');
+  const [state, setState] = useState<(typeof STATE_FILTERS)[number]>('all');
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return (movies.data ?? []).filter((m) => {
       if (status !== 'all' && m.radarrStatus !== status) return false;
-      if (provenance !== 'all' && String(m.addedByFilmstrip) !== provenance) return false;
+      if (state !== 'all' && m.state !== state) return false;
       if (!q) return true;
       return (
         m.title.toLowerCase().includes(q) ||
         m.sources.some((s) => s.listLabel.toLowerCase().includes(q) || s.ownerName.toLowerCase().includes(q))
       );
     });
-  }, [movies.data, query, status, provenance]);
+  }, [movies.data, query, status, state]);
 
   return (
     <div>
       <h1>Movies</h1>
       <p className="muted">
         Every film Filmstrip tracks — the list(s) that added it, the owner(s) behind those lists, its
-        current status in Radarr, and whether Filmstrip itself added it. Only films Filmstrip added
-        are ever eligible for its deletion workflow — a pre-existing film leaving a list is never
-        queued for review.
+        current status in Radarr, and its lifecycle state. Only added/deletion_queued/deleted/kept
+        films were ever eligible for the deletion workflow — a pre-existing film leaving a list is
+        never queued for review.
       </p>
 
       <div className="row" style={{ marginBottom: 12 }}>
@@ -100,11 +107,11 @@ export default function Movies() {
           </select>
         </label>
         <label style={{ flex: 'none', width: 200 }}>
-          <span>Provenance</span>
-          <select value={provenance} onChange={(e) => setProvenance(e.target.value as typeof provenance)}>
-            {PROVENANCE_FILTERS.map((p) => (
-              <option key={p} value={p}>
-                {p === 'all' ? 'all' : PROVENANCE_META[p].label}
+          <span>State</span>
+          <select value={state} onChange={(e) => setState(e.target.value as typeof state)}>
+            {STATE_FILTERS.map((s) => (
+              <option key={s} value={s}>
+                {s === 'all' ? 'all' : STATE_META[s].label}
               </option>
             ))}
           </select>
@@ -123,7 +130,7 @@ export default function Movies() {
               <th>Added by lists</th>
               <th>Owner(s)</th>
               <th>Radarr status</th>
-              <th>Provenance</th>
+              <th>State</th>
               <th>On disk</th>
             </tr>
           </thead>
@@ -137,7 +144,6 @@ export default function Movies() {
                     {m.year ? ` (${m.year})` : ''}
                     <div className="muted" style={{ fontSize: 12 }}>
                       tmdb {m.tmdbId}
-                      {m.pinned ? ' · pinned' : ''}
                     </div>
                   </td>
                   <td>
@@ -163,7 +169,7 @@ export default function Movies() {
                     <StatusBadge status={m.radarrStatus} />
                   </td>
                   <td>
-                    <ProvenanceBadge addedByFilmstrip={m.addedByFilmstrip} />
+                    <StateBadge state={m.state} />
                   </td>
                   <td className="muted">{m.radarr ? formatSize(m.radarr.sizeOnDisk) : '—'}</td>
                 </tr>

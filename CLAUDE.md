@@ -20,7 +20,7 @@ layout, conventions, and current status.
 | Frontend | React + Vite SPA | Clean split from the API |
 | Persistence | SQLite + Prisma (v6) | Typed schema + migrations; single-file DB fits one container |
 | Packaging | One container: Express serves the SPA **and** `/api` | Collapses the upstream "N containers for N lists" model |
-| Provenance | Only ever touch films Filmstrip added (`addedByFilmstrip`) | Never clobber Seerr/manual adds — see [DESIGN.md §2](./DESIGN.md) |
+| Provenance | Only ever touch films Filmstrip added (`Movie.state`) | Never clobber Seerr/manual adds — see [DESIGN.md §2](./DESIGN.md) |
 | Removal | Delete-by-default, behind a human **approval queue** | Avoid hoarding without risking accidental loss — [DESIGN.md §6](./DESIGN.md) |
 | Identity/auth | Jellyfin accounts (username/password today; Quick Connect planned) | Audience already has them; complements Seerr — [DESIGN.md §9](./DESIGN.md) |
 
@@ -52,10 +52,11 @@ connections, global defaults), `User` (owns lists; carries a Radarr attribution 
 `letterboxdUsername`/`jellyfinUserId` for watched-state), `List` (a Letterboxd URL with per-list
 overrides that fall back to Settings, plus `deleteFiles`/`unwatchedOnly`/`removeOnWatch`/
 `makeCollection`/`collectionNameOverride`), `SyncRun` (one row per sync attempt), `Movie` (a film
-normalized across lists by `tmdbId`, carrying the `addedByFilmstrip` provenance flag, `pinned`, and
-`jellyfinItemId`), `ListMovie` (the `List`<->`Movie` join — membership, presence, per-list
-`excluded` — replaces the old per-list `SyncedMovie`/`movies.json`), `DeletionRequest` (the
-approval-queue row a removal candidate sits in until approved or kept).
+normalized across lists by `tmdbId`, carrying `state` — the single source of truth for its
+lifecycle, DESIGN.md §4 — and `jellyfinItemId`), `ListMovie` (the `List`<->`Movie` join —
+membership, presence, per-list `excluded` — replaces the old per-list `SyncedMovie`/`movies.json`),
+`DeletionRequest` (the approval-queue row a removal candidate sits in until approved or kept),
+`MovieEvent` (append-only per-film history log, DESIGN.md §4).
 
 Module layout:
 - **`src/scraper/`** — reused from upstream. `fetchMoviesFromUrl(url, take?, strategy?)` detects the
@@ -81,28 +82,38 @@ Module layout:
 - **`src/collections/index.ts`** — `syncCollection(list, collectionName)`: resolves each of the
   list's current films to a Jellyfin item id (cached on `Movie.jellyfinItemId` after the first
   lookup), then creates or diffs membership of the named BoxSet.
+- **`src/movieState.ts`** — the single place allowed to write `Movie.state` (DESIGN.md §4).
+  `transitionMovie(tx, movieId, toState, event)` updates `Movie.state` and appends a `MovieEvent`
+  in one call; `logMovieEvent(tx, movieId, event)` appends a history event without changing state
+  (used for per-list `seen_on_list`/`left_list`/`restored_to_list`, which apply to every film
+  regardless of state). Both take a transaction client so callers control atomicity.
 - **`src/scheduler/index.ts`** — `syncList` (scrape → optionally filter by watched state
-  (`unwatchedOnly`) → dedup vs `ListMovie` (by `tmdbId`) → upsert → record a `SyncRun` plus
-  `Movie`/`ListMovie` rows → `reconcileList` for anything that dropped off → `reconcileWatched` if
-  `removeOnWatch` → `syncCollection` if `makeCollection`; dry-run writes no rows and skips all of
-  the above; failures are recorded, never thrown), plus `syncListById`, `syncAll`, `syncDue`, and
-  `startScheduler`.
+  (`unwatchedOnly`) → dedup vs `ListMovie` by `tmdbId`, retrying anything still `'wanted'` →
+  Phase A: `transitionMovie`/create a `Movie`/`ListMovie` row at `state: 'wanted'` for every
+  about-to-be-attempted film, *before* calling Radarr, so a failed attempt is visible instead of
+  silently retried forever → `upsertMovies` → Phase C: transition each to `added`/`pre_existing` or
+  log a `radarr_add_failed` event, per Radarr's outcome → record a `SyncRun` → `reconcileList` for
+  anything that dropped off → `reconcileWatched` if `removeOnWatch` → `syncCollection` if
+  `makeCollection`; dry-run writes no rows and skips all of the above; failures are recorded, never
+  thrown), plus `syncListById`, `syncAll`, `syncDue`, and `startScheduler`.
 - **`src/reconcile/index.ts`** — the keeper-rule (DESIGN.md §4-§6). `reconcileList(list,
   currentTmdbIds)` flips `ListMovie.presentOnList` false for anything no longer scraped and
-  restores it true for anything that reappears after being marked gone; refuses to drop more than
-  half of a list's currently-tracked films at once (min. 3) since that's more likely a broken
-  scrape than a real edit. It also cancels any pending `left_list` `DeletionRequest` (and
-  re-monitors in Radarr) for any film confirmed present this run, not just newly-returned ones —
-  self-heals a request stranded by a bad scrape from before this existed. `evaluateForDeletion`'s
-  pending-request check is re-verified inside a transaction right before creating, closing a race
+  restores it true for anything that reappears after being marked gone (logging a paired
+  `left_list`/`restored_to_list` `MovieEvent` either way, for every film regardless of state);
+  refuses to drop more than half of a list's currently-tracked films at once (min. 3) since that's
+  more likely a broken scrape than a real edit. It also cancels any pending `left_list`
+  `DeletionRequest`, transitions the film back to `added`, and re-monitors in Radarr for any film
+  confirmed present this run, not just newly-returned ones — self-heals a request stranded by a bad
+  scrape from before this existed. `evaluateForDeletion`'s gate is `Movie.state === 'added'`,
+  re-verified inside a transaction right before transitioning to `deletion_queued`, closing a race
   where an overlapping manual sync + scheduler tick could otherwise double-create a request.
-  `reconcileWatched
-  (list, watchedTmdbIds)` queues anything still on the list the owner has watched; `deleteList(id)`
-  deletes a list and either pins its Filmstrip-added films (if `List.permanence`) or runs them
-  through the keeper-rule with reason `list_deleted`. All funnel through the same internal
-  keeper-rule check, opening a `pending` `DeletionRequest` (and unmonitoring in Radarr) for eligible
-  candidates. `approveDeletion(id)`/`keepDeletion(id)` resolve a pending request. `DeletionRequest.
-  reason` ∈ `left_list | watched | list_deleted`.
+  `reconcileWatched(list, watchedTmdbIds)` queues anything still on the list the owner has watched;
+  `deleteList(id)` deletes a list and either transitions its Filmstrip-managed films straight to
+  `kept` (if `List.permanence`) or runs them through the keeper-rule with reason `list_deleted`. All
+  funnel through the same internal keeper-rule check, opening a `pending` `DeletionRequest` (and
+  unmonitoring in Radarr) for eligible candidates. `approveDeletion(id)`/`keepDeletion(id)` resolve
+  a pending request and transition state to `deleted`/`kept`. `DeletionRequest.reason` ∈
+  `left_list | watched | list_deleted`.
 - **`src/server/`** — the REST API (M5) + GUI auth (M6). `app.ts` exports `createApp()` (an Express
   app, no `listen` — so tests drive it via supertest and `src/index.ts` binds the port; it also
   serves `web/dist` when that build exists, with an Express-5 `/*splat` catch-all for SPA

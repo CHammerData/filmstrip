@@ -120,6 +120,7 @@ model List {
   syncRuns         SyncRun[]
   listMovies       ListMovie[]
   deletionRequests DeletionRequest[]
+  movieEvents      MovieEvent[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -155,22 +156,46 @@ model Movie {
   title  String
   year   Int?
 
-  /// True only when Filmstrip itself created this movie in Radarr (vs it already existing —
-  /// a Seerr/manual add). The provenance keystone: never touch films this is false for.
-  addedByFilmstrip Boolean @default(false)
-  radarrMovieId    Int?
-  /// Jellyfin library item id, resolved + cached the first time a makeCollection list needs it.
-  jellyfinItemId   String?
+  /// The single source of truth for this film's lifecycle (DESIGN.md §10):
+  /// wanted | pre_existing | added | deletion_queued | deleted | kept
+  /// Written only by transitionMovie (src/movieState.ts) -- never set directly elsewhere.
+  /// pre_existing is the provenance keystone: a film Filmstrip didn't itself add to Radarr is
+  /// never eligible to move into deletion_queued, even while it sits on a Filmstrip list.
+  state String @default("wanted")
 
-  /// "Hands off forever" — the keeper-rule will never queue this film for deletion. Set by
-  /// approving Keep on a pending DeletionRequest.
-  pinned Boolean @default(false)
+  radarrMovieId  Int?
+  /// Jellyfin library item id, resolved + cached the first time a makeCollection list needs it.
+  jellyfinItemId String?
 
   listMovies       ListMovie[]
   deletionRequests DeletionRequest[]
+  /// Append-only history: every state transition, plus per-list seen/left/restored events that
+  /// don't change `state` (e.g. a pre_existing film leaving a list) -- see src/movieState.ts.
+  events           MovieEvent[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+/// Append-only per-film history log (DESIGN.md §10). Never updated or deleted, only appended to.
+model MovieEvent {
+  id      Int   @id @default(autoincrement())
+  movie   Movie @relation(fields: [movieId], references: [id], onDelete: Cascade)
+  movieId Int
+
+  /// seen_on_list | left_list | restored_to_list | radarr_add_failed | added_to_radarr |
+  /// already_in_radarr | deletion_queued | deletion_queue_cancelled | deleted | kept | backfilled
+  type   String
+  detail String?
+
+  /// The list involved, when applicable (e.g. seen_on_list/left_list/deletion_queued). Kept on
+  /// SetNull so a later list deletion doesn't erase history that already happened.
+  list   List? @relation(fields: [listId], references: [id], onDelete: SetNull)
+  listId Int?
+
+  createdAt DateTime @default(now())
+
+  @@index([movieId])
 }
 
 /// List <-> Movie membership (replaces SyncedMovie): is a film still on this list, and what

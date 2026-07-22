@@ -1,10 +1,11 @@
 import prisma from '../db/client';
 import { resolveListConfig, ListWithUser } from '../db/config';
 import { fetchMoviesFromUrl, LetterboxdMovie } from '../scraper';
-import { createRadarrClient, upsertMovies, AddResult } from '../api/radarr';
+import { createRadarrClient, upsertMovies } from '../api/radarr';
 import { reconcileList, reconcileWatched } from '../reconcile';
 import { getOwnerWatchedTmdbIds } from '../watched';
 import { syncCollection } from '../collections';
+import { transitionMovie, logMovieEvent } from '../movieState';
 import logger from '../util/logger';
 
 export interface SyncResult {
@@ -18,17 +19,11 @@ export interface SyncResult {
   dryRun: boolean;
 }
 
-/** Should a Movie/ListMovie row be written for this outcome? */
-function shouldRecord(status: AddResult['status']): boolean {
-  // 'added' and 'skipped' are terminal (in Radarr, or unfixable like no-tmdbId).
-  // 'failed' should be retried next run; 'dryRun' makes no real change.
-  return status === 'added' || status === 'skipped';
-}
-
 /**
- * Sync a single list end-to-end: scrape -> dedup against ListMovie -> upsert to
- * Radarr -> record a SyncRun (and Movie/ListMovie rows, unless dry-run). Never throws;
- * failures are captured on the returned result and the SyncRun row.
+ * Sync a single list end-to-end: scrape -> dedup against ListMovie -> ensure each attempted
+ * movie has a Movie/ListMovie row at state 'wanted' -> upsert to Radarr -> transition each to its
+ * outcome -> record a SyncRun. Never throws; failures are captured on the returned result and the
+ * SyncRun row.
  */
 export async function syncList(list: ListWithUser): Promise<SyncResult> {
   const settings = await prisma.settings.findUnique({ where: { id: 1 } });
@@ -66,18 +61,54 @@ export async function syncList(list: ListWithUser): Promise<SyncResult> {
       : scraped;
     const unwatchedExcluded = scraped.length - movies.length;
 
-    // Dedup: skip movies already recorded against this list (by tmdbId). Movies without a
-    // tmdbId can't be identified across runs, so they're always retried — cheap, since
-    // upsertMovies short-circuits them without calling Radarr.
+    // Dedup: skip movies already resolved for this list (by tmdbId) -- added/pre_existing/
+    // deletion_queued/deleted/kept. A movie still 'wanted' (a previous add attempt failed) is
+    // retried every sync until it resolves. Movies without a tmdbId can't be identified across
+    // runs, so they're always retried — cheap, since upsertMovies short-circuits them without
+    // calling Radarr.
     const seen = await prisma.listMovie.findMany({
       where: { listId: list.id },
-      select: { movie: { select: { tmdbId: true } } },
+      select: { movie: { select: { tmdbId: true, state: true } } },
     });
-    const seenTmdbIds = new Set(seen.map((s) => s.movie.tmdbId));
+    const resolvedTmdbIds = new Set(
+      seen.filter((s) => s.movie.state !== 'wanted').map((s) => s.movie.tmdbId)
+    );
     const newMovies = movies.filter(
-      (m: LetterboxdMovie) => !m.tmdbId || !seenTmdbIds.has(parseInt(m.tmdbId))
+      (m: LetterboxdMovie) => !m.tmdbId || !resolvedTmdbIds.has(parseInt(m.tmdbId))
     );
     const alreadySynced = movies.length - newMovies.length;
+
+    // Ensure every movie about to be attempted has a Movie/ListMovie row at state 'wanted' before
+    // touching Radarr — this is what makes a failed add finally visible (previously a 'failed'
+    // outcome was never persisted at all, silently retried forever with zero trace) and it's what
+    // lets the dedup above naturally retry a still-'wanted' movie next sync. Skipped in dry-run so
+    // nothing is persisted. Sequential: SQLite is single-writer, so a Promise.all fan-out here made
+    // a large list (e.g. a ~79-film watchlist -> ~158 concurrent writes) contend for the write lock
+    // until Prisma gave up with "Socket timeout".
+    if (!config.dryRun) {
+      for (const m of newMovies) {
+        if (!m.tmdbId) continue;
+        const tmdbId = parseInt(m.tmdbId);
+        await prisma.$transaction(async (tx) => {
+          const movie = await tx.movie.upsert({
+            where: { tmdbId },
+            update: {},
+            create: { tmdbId, title: m.name, year: m.publishedYear ?? null },
+          });
+          const existingListMovie = await tx.listMovie.findUnique({
+            where: { listId_movieId: { listId: list.id, movieId: movie.id } },
+          });
+          if (!existingListMovie) {
+            await logMovieEvent(tx, movie.id, { type: 'seen_on_list', listId: list.id });
+          }
+          await tx.listMovie.upsert({
+            where: { listId_movieId: { listId: list.id, movieId: movie.id } },
+            update: { presentOnList: true, lastSeenAt: new Date() },
+            create: { listId: list.id, movieId: movie.id, status: 'pending' },
+          });
+        });
+      }
+    }
 
     const client = createRadarrClient({ url: config.radarrUrl, apiKey: config.radarrApiKey });
     const summary = await upsertMovies(client, newMovies, {
@@ -89,31 +120,36 @@ export async function syncList(list: ListWithUser): Promise<SyncResult> {
       dryRun: config.dryRun,
     });
 
-    // Persist Movie/ListMovie rows (skip in dry-run so the next real run still acts on them).
-    // Movies without a tmdbId have no stable identity and are never recorded.
     if (!config.dryRun) {
-      const rows = summary.results.filter((r) => shouldRecord(r.status) && r.movie.tmdbId);
-      // Persist sequentially: SQLite is single-writer, so a Promise.all fan-out here made a large
-      // list (e.g. a ~79-film watchlist -> ~158 concurrent writes) contend for the write lock until
-      // Prisma gave up with "Socket timeout". Sequential upserts on a local file are milliseconds
-      // each and never contend.
-      for (const r of rows) {
-        const tmdbId = parseInt(r.movie.tmdbId!);
-        const movie = await prisma.movie.upsert({
-          where: { tmdbId },
-          update: r.radarrMovieId ? { radarrMovieId: r.radarrMovieId } : {},
-          create: {
-            tmdbId,
-            title: r.movie.name,
-            year: r.movie.publishedYear ?? null,
-            addedByFilmstrip: r.status === 'added',
-            radarrMovieId: r.radarrMovieId ?? null,
-          },
-        });
-        await prisma.listMovie.upsert({
-          where: { listId_movieId: { listId: list.id, movieId: movie.id } },
-          update: { presentOnList: true, status: r.status, lastSeenAt: new Date() },
-          create: { listId: list.id, movieId: movie.id, status: r.status },
+      // Transition each attempted movie to its outcome. Movies without a tmdbId were never given
+      // a row above and have no stable identity, so they're skipped here too. Only transition the
+      // overall Movie state (vs. just this list's ListMovie.status) when it's still 'wanted' --
+      // if another list already resolved this same movie first, its state is left alone here,
+      // matching how ListMovie is a per-list fact but Movie.state is shared across lists.
+      for (const r of summary.results) {
+        if (!r.movie.tmdbId) continue;
+        const tmdbId = parseInt(r.movie.tmdbId);
+        const movie = await prisma.movie.findUnique({ where: { tmdbId } });
+        if (!movie) continue;
+        await prisma.$transaction(async (tx) => {
+          await tx.listMovie.update({
+            where: { listId_movieId: { listId: list.id, movieId: movie.id } },
+            data: { status: r.status, lastSeenAt: new Date() },
+          });
+          if (r.status === 'added') {
+            if (r.radarrMovieId) {
+              await tx.movie.update({ where: { id: movie.id }, data: { radarrMovieId: r.radarrMovieId } });
+            }
+            if (movie.state === 'wanted') {
+              await transitionMovie(tx, movie.id, 'added', { type: 'added_to_radarr' });
+            }
+          } else if (r.status === 'skipped') {
+            if (movie.state === 'wanted') {
+              await transitionMovie(tx, movie.id, 'pre_existing', { type: 'already_in_radarr' });
+            }
+          } else if (r.status === 'failed') {
+            await logMovieEvent(tx, movie.id, { type: 'radarr_add_failed', detail: r.reason });
+          }
         });
       }
 

@@ -123,13 +123,14 @@ export interface MovieSource {
   ownerName: string;
 }
 
+export type MovieState = 'wanted' | 'pre_existing' | 'added' | 'deletion_queued' | 'deleted' | 'kept';
+
 export interface MovieRow {
   id: number;
   tmdbId: number;
   title: string;
   year: number | null;
-  addedByFilmstrip: boolean;
-  pinned: boolean;
+  state: MovieState;
   radarrStatus: RadarrStatus;
   radarr: { present: boolean; hasFile: boolean; monitored: boolean; sizeOnDisk: number } | null;
   sources: MovieSource[];

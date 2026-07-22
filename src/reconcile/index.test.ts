@@ -4,7 +4,8 @@ const mockPrisma: any = {
   settings: { findUnique: jest.fn() },
   user: { findMany: jest.fn() },
   list: { findMany: jest.fn(), findUnique: jest.fn(), delete: jest.fn() },
-  movie: { findUnique: jest.fn(), update: jest.fn(), updateMany: jest.fn() },
+  movie: { findUnique: jest.fn(), update: jest.fn() },
+  movieEvent: { create: jest.fn() },
   listMovie: { findMany: jest.fn(), findFirst: jest.fn(), update: jest.fn() },
   deletionRequest: {
     findFirst: jest.fn(),
@@ -14,8 +15,8 @@ const mockPrisma: any = {
     update: jest.fn(),
     deleteMany: jest.fn(),
   },
-  // evaluateForDeletion re-checks-and-creates inside a transaction to close a race window; running
-  // the callback against mockPrisma itself keeps every mock (findFirst, create, ...) shared as-is.
+  // evaluateForDeletion (and other transitions) re-check-and-write inside a transaction to close a
+  // race window; running the callback against mockPrisma itself keeps every mock shared as-is.
   $transaction: jest.fn((cb: (tx: unknown) => unknown) => cb(mockPrisma)),
 };
 
@@ -106,10 +107,9 @@ function makeMovie(overrides: Partial<Movie> = {}): Movie {
     imdbId: null,
     title: 'A Movie',
     year: 2020,
-    addedByFilmstrip: true,
+    state: 'added',
     radarrMovieId: 500,
     jellyfinItemId: null,
-    pinned: false,
     createdAt: now,
     updatedAt: now,
     ...overrides,
@@ -124,7 +124,6 @@ describe('reconcileList', () => {
     mockPrisma.settings.findUnique.mockResolvedValue(makeSettings());
     mockPrisma.listMovie.update.mockResolvedValue({});
     mockPrisma.listMovie.findFirst.mockResolvedValue(null); // nothing else wants it, by default
-    mockPrisma.deletionRequest.findFirst.mockResolvedValue(null); // no existing pending request
     mockPrisma.deletionRequest.findMany.mockResolvedValue([]); // no stale left_list requests, by default
     mockPrisma.deletionRequest.create.mockResolvedValue({});
     (getMovieById as jest.Mock).mockResolvedValue({
@@ -150,7 +149,7 @@ describe('reconcileList', () => {
     expect(mockPrisma.deletionRequest.create).not.toHaveBeenCalled();
   });
 
-  it('marks a dropped-off movie not present, and opens a DeletionRequest when eligible', async () => {
+  it('marks a dropped-off movie not present, transitions it to deletion_queued, and opens a DeletionRequest', async () => {
     mockPrisma.listMovie.findMany.mockResolvedValue([
       { id: 1, movieId: 1, presentOnList: true, movie: { tmdbId: 100 } },
     ]);
@@ -162,7 +161,14 @@ describe('reconcileList', () => {
       where: { id: 1 },
       data: { presentOnList: false, removedFromListAt: expect.any(Date) },
     });
+    expect(mockPrisma.movieEvent.create).toHaveBeenCalledWith({
+      data: { movieId: 1, type: 'left_list', listId: 10 },
+    });
     expect(setMonitored).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ id: 500 }), false);
+    expect(mockPrisma.movie.update).toHaveBeenCalledWith({ where: { id: 1 }, data: { state: 'deletion_queued' } });
+    expect(mockPrisma.movieEvent.create).toHaveBeenCalledWith({
+      data: { movieId: 1, type: 'deletion_queued', detail: 'left_list', listId: 10 },
+    });
     expect(mockPrisma.deletionRequest.create).toHaveBeenCalledWith({
       data: { movieId: 1, reason: 'left_list', triggeredByListId: 10, status: 'pending' },
     });
@@ -178,6 +184,9 @@ describe('reconcileList', () => {
     expect(mockPrisma.listMovie.update).toHaveBeenCalledWith({
       where: { id: 1 },
       data: { presentOnList: true, removedFromListAt: null, lastSeenAt: expect.any(Date) },
+    });
+    expect(mockPrisma.movieEvent.create).toHaveBeenCalledWith({
+      data: { movieId: 1, type: 'restored_to_list', listId: 10 },
     });
     expect(mockPrisma.deletionRequest.create).not.toHaveBeenCalled();
   });
@@ -222,12 +231,16 @@ describe('reconcileList', () => {
     mockPrisma.deletionRequest.findMany.mockResolvedValue([
       { id: 9, movieId: 1, status: 'pending', reason: 'left_list' },
     ]);
-    mockPrisma.movie.findUnique.mockResolvedValue(makeMovie());
+    mockPrisma.movie.findUnique.mockResolvedValue(makeMovie({ state: 'deletion_queued' }));
 
     await reconcileList(makeList(), new Set([100]));
 
     expect(setMonitored).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ id: 500 }), true);
     expect(mockPrisma.deletionRequest.deleteMany).toHaveBeenCalledWith({ where: { id: { in: [9] } } });
+    expect(mockPrisma.movie.update).toHaveBeenCalledWith({ where: { id: 1 }, data: { state: 'added' } });
+    expect(mockPrisma.movieEvent.create).toHaveBeenCalledWith({
+      data: { movieId: 1, type: 'deletion_queue_cancelled', detail: 'confirmed still on a tracked list' },
+    });
   });
 
   it('only ever looks for left_list pending requests when checking for stale ones', async () => {
@@ -242,14 +255,13 @@ describe('reconcileList', () => {
     });
   });
 
-  it('does not create a duplicate DeletionRequest if one appears between the early check and the transaction', async () => {
+  it('does not create a duplicate DeletionRequest if the movie is queued by someone else between the early check and the transaction', async () => {
     mockPrisma.listMovie.findMany.mockResolvedValue([
       { id: 1, movieId: 1, presentOnList: true, movie: { tmdbId: 100 } },
     ]);
-    mockPrisma.movie.findUnique.mockResolvedValue(makeMovie());
-    mockPrisma.deletionRequest.findFirst
-      .mockResolvedValueOnce(null) // early check: nothing pending yet
-      .mockResolvedValueOnce({ id: 99, status: 'pending' }); // re-check inside the transaction: lost the race
+    mockPrisma.movie.findUnique
+      .mockResolvedValueOnce(makeMovie()) // early check: state 'added'
+      .mockResolvedValueOnce(makeMovie({ state: 'deletion_queued' })); // re-check inside the transaction: lost the race
 
     await reconcileList(makeList(), new Set());
 
@@ -257,11 +269,11 @@ describe('reconcileList', () => {
     expect(mockPrisma.deletionRequest.create).not.toHaveBeenCalled();
   });
 
-  it('does not open a DeletionRequest for a film not added by Filmstrip', async () => {
+  it('does not open a DeletionRequest for a film not in "added" state (e.g. pre_existing)', async () => {
     mockPrisma.listMovie.findMany.mockResolvedValue([
       { id: 1, movieId: 1, presentOnList: true, movie: { tmdbId: 100 } },
     ]);
-    mockPrisma.movie.findUnique.mockResolvedValue(makeMovie({ addedByFilmstrip: false }));
+    mockPrisma.movie.findUnique.mockResolvedValue(makeMovie({ state: 'pre_existing' }));
 
     await reconcileList(makeList(), new Set());
 
@@ -269,11 +281,11 @@ describe('reconcileList', () => {
     expect(mockPrisma.deletionRequest.create).not.toHaveBeenCalled();
   });
 
-  it('does not open a DeletionRequest for a pinned film', async () => {
+  it('does not open a DeletionRequest for a kept film', async () => {
     mockPrisma.listMovie.findMany.mockResolvedValue([
       { id: 1, movieId: 1, presentOnList: true, movie: { tmdbId: 100 } },
     ]);
-    mockPrisma.movie.findUnique.mockResolvedValue(makeMovie({ pinned: true }));
+    mockPrisma.movie.findUnique.mockResolvedValue(makeMovie({ state: 'kept' }));
 
     await reconcileList(makeList(), new Set());
 
@@ -310,12 +322,11 @@ describe('reconcileList', () => {
     expect(mockPrisma.deletionRequest.create).not.toHaveBeenCalled();
   });
 
-  it('skips a film that already has a pending DeletionRequest', async () => {
+  it('skips a film already queued for deletion', async () => {
     mockPrisma.listMovie.findMany.mockResolvedValue([
       { id: 1, movieId: 1, presentOnList: true, movie: { tmdbId: 100 } },
     ]);
-    mockPrisma.movie.findUnique.mockResolvedValue(makeMovie());
-    mockPrisma.deletionRequest.findFirst.mockResolvedValue({ id: 5, status: 'pending' });
+    mockPrisma.movie.findUnique.mockResolvedValue(makeMovie({ state: 'deletion_queued' }));
 
     await reconcileList(makeList(), new Set());
 
@@ -339,7 +350,6 @@ describe('reconcileWatched', () => {
     mockPrisma.user.findMany.mockResolvedValue([{ tag: 'chris' }]);
     mockPrisma.list.findMany.mockResolvedValue([{ extraTags: null }]);
     mockPrisma.settings.findUnique.mockResolvedValue(makeSettings());
-    mockPrisma.deletionRequest.findFirst.mockResolvedValue(null);
     mockPrisma.deletionRequest.create.mockResolvedValue({});
     (getMovieById as jest.Mock).mockResolvedValue({ id: 500, title: 'A Movie', tags: [] });
     (getAllTags as jest.Mock).mockResolvedValue([{ id: 1, label: 'chris' }]);
@@ -375,9 +385,9 @@ describe('reconcileWatched', () => {
     expect(mockPrisma.deletionRequest.create).not.toHaveBeenCalled();
   });
 
-  it('does not queue a pinned film', async () => {
+  it('does not queue a kept film', async () => {
     mockPrisma.listMovie.findMany.mockResolvedValue([{ movieId: 1, movie: { tmdbId: 100 } }]);
-    mockPrisma.movie.findUnique.mockResolvedValue(makeMovie({ pinned: true }));
+    mockPrisma.movie.findUnique.mockResolvedValue(makeMovie({ state: 'kept' }));
 
     await reconcileWatched(makeList(), new Set([100]));
 
@@ -408,7 +418,7 @@ describe('approveDeletion', () => {
     };
   }
 
-  it('deletes from Radarr using the triggering list deleteFiles setting, and resolves approved', async () => {
+  it('deletes from Radarr using the triggering list deleteFiles setting, resolves approved, and transitions to deleted', async () => {
     mockPrisma.deletionRequest.findUnique.mockResolvedValue(
       makeRequest({ triggeredByList: makeList({ deleteFiles: false }) })
     );
@@ -420,6 +430,10 @@ describe('approveDeletion', () => {
       where: { id: 1 },
       data: { status: 'approved', resolvedAt: expect.any(Date) },
     });
+    expect(mockPrisma.movie.update).toHaveBeenCalledWith({ where: { id: 1 }, data: { state: 'deleted' } });
+    expect(mockPrisma.movieEvent.create).toHaveBeenCalledWith({
+      data: { movieId: 1, type: 'deleted', detail: 'file kept on disk' },
+    });
   });
 
   it('defaults deleteFiles to true when there is no triggering list', async () => {
@@ -428,6 +442,9 @@ describe('approveDeletion', () => {
     await approveDeletion(1);
 
     expect(deleteMovie).toHaveBeenCalledWith(expect.anything(), 500, true);
+    expect(mockPrisma.movieEvent.create).toHaveBeenCalledWith({
+      data: { movieId: 1, type: 'deleted', detail: 'file deleted' },
+    });
   });
 
   it('throws if the request is not pending', async () => {
@@ -451,12 +468,13 @@ describe('keepDeletion', () => {
     mockPrisma.deletionRequest.update.mockResolvedValue({});
   });
 
-  it('pins the film and resolves the request as kept', async () => {
+  it('transitions the film to kept and resolves the request as kept', async () => {
     mockPrisma.deletionRequest.findUnique.mockResolvedValue({ id: 1, movieId: 1, status: 'pending' });
 
     await keepDeletion(1);
 
-    expect(mockPrisma.movie.update).toHaveBeenCalledWith({ where: { id: 1 }, data: { pinned: true } });
+    expect(mockPrisma.movie.update).toHaveBeenCalledWith({ where: { id: 1 }, data: { state: 'kept' } });
+    expect(mockPrisma.movieEvent.create).toHaveBeenCalledWith({ data: { movieId: 1, type: 'kept' } });
     expect(mockPrisma.deletionRequest.update).toHaveBeenCalledWith({
       where: { id: 1 },
       data: { status: 'kept', resolvedAt: expect.any(Date) },
@@ -478,9 +496,8 @@ describe('deleteList', () => {
     mockPrisma.list.findMany.mockResolvedValue([{ extraTags: null }]);
     mockPrisma.settings.findUnique.mockResolvedValue(makeSettings());
     mockPrisma.list.delete.mockResolvedValue({});
-    mockPrisma.movie.updateMany.mockResolvedValue({ count: 0 });
+    mockPrisma.movie.update.mockResolvedValue({});
     mockPrisma.listMovie.findFirst.mockResolvedValue(null);
-    mockPrisma.deletionRequest.findFirst.mockResolvedValue(null);
     mockPrisma.deletionRequest.create.mockResolvedValue({});
     (getMovieById as jest.Mock).mockResolvedValue({ id: 500, title: 'A Movie', tags: [] });
     (getAllTags as jest.Mock).mockResolvedValue([{ id: 1, label: 'chris' }]);
@@ -495,7 +512,7 @@ describe('deleteList', () => {
 
   it('permanence off: deletes the list and queues its films for review (list_deleted)', async () => {
     mockPrisma.list.findUnique.mockResolvedValue({ id: 10, label: 'L', permanence: false });
-    mockPrisma.listMovie.findMany.mockResolvedValue([{ movieId: 1, movie: { addedByFilmstrip: true } }]);
+    mockPrisma.listMovie.findMany.mockResolvedValue([{ movieId: 1, movie: { state: 'added' } }]);
     mockPrisma.movie.findUnique.mockResolvedValue(makeMovie());
 
     await deleteList(10);
@@ -505,27 +522,30 @@ describe('deleteList', () => {
     expect(mockPrisma.deletionRequest.create).toHaveBeenCalledWith({
       data: { movieId: 1, reason: 'list_deleted', triggeredByListId: null, status: 'pending' },
     });
-    expect(mockPrisma.movie.updateMany).not.toHaveBeenCalled();
   });
 
-  it('permanence on: deletes the list and pins its Filmstrip-added films instead of queueing', async () => {
+  it('permanence on: deletes the list and pins (transitions to kept) its Filmstrip-managed films instead of queueing', async () => {
     mockPrisma.list.findUnique.mockResolvedValue({ id: 10, label: 'L', permanence: true });
     mockPrisma.listMovie.findMany.mockResolvedValue([
-      { movieId: 1, movie: { addedByFilmstrip: true } },
-      { movieId: 2, movie: { addedByFilmstrip: false } }, // not ours -> not pinned
+      { movieId: 1, movie: { state: 'added' } },
+      { movieId: 2, movie: { state: 'pre_existing' } }, // not ours -> not pinned
     ]);
 
     await deleteList(10);
 
     expect(mockPrisma.list.delete).toHaveBeenCalledWith({ where: { id: 10 } });
-    expect(mockPrisma.movie.updateMany).toHaveBeenCalledWith({ where: { id: { in: [1] } }, data: { pinned: true } });
+    expect(mockPrisma.movie.update).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.movie.update).toHaveBeenCalledWith({ where: { id: 1 }, data: { state: 'kept' } });
+    expect(mockPrisma.movieEvent.create).toHaveBeenCalledWith({
+      data: { movieId: 1, type: 'kept', detail: 'list "L" deleted with permanence on' },
+    });
     expect(mockPrisma.deletionRequest.create).not.toHaveBeenCalled();
     expect(setMonitored).not.toHaveBeenCalled();
   });
 
   it('permanence off: still deletes the list even if evaluating a film throws', async () => {
     mockPrisma.list.findUnique.mockResolvedValue({ id: 10, label: 'L', permanence: false });
-    mockPrisma.listMovie.findMany.mockResolvedValue([{ movieId: 1, movie: { addedByFilmstrip: true } }]);
+    mockPrisma.listMovie.findMany.mockResolvedValue([{ movieId: 1, movie: { state: 'added' } }]);
     mockPrisma.movie.findUnique.mockRejectedValue(new Error('db boom'));
 
     await expect(deleteList(10)).resolves.toBeUndefined();

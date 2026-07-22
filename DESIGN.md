@@ -115,6 +115,13 @@ candidate** only when **all** hold:
 
 A candidate is not deleted directly — it enters the approval queue (§6).
 
+`reconcileList` also restores `presentOnList` for a film that reappears in a later scrape after
+being marked gone — otherwise a single bad scrape (e.g. a bot-check/interstitial page returning
+HTTP 200 with only a handful of links) would sink a film out of its list's Jellyfin collection
+permanently, with no self-correction. As a second guard against that same failure mode, a scrape
+that would drop more than half of a list's currently-tracked films at once (and at least 3) is
+treated as a broken scrape rather than a real edit, and skipped for that run.
+
 ## 6. Deletion = mark → review → resolve **[M3 ✅]**
 
 Default action is **delete (with file)**, but never without review.

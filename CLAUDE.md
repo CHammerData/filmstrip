@@ -88,7 +88,10 @@ Module layout:
   the above; failures are recorded, never thrown), plus `syncListById`, `syncAll`, `syncDue`, and
   `startScheduler`.
 - **`src/reconcile/index.ts`** — the keeper-rule (DESIGN.md §4-§6). `reconcileList(list,
-  currentTmdbIds)` flips `ListMovie.presentOnList` for anything no longer scraped; `reconcileWatched
+  currentTmdbIds)` flips `ListMovie.presentOnList` false for anything no longer scraped and
+  restores it true for anything that reappears after being marked gone; refuses to drop more than
+  half of a list's currently-tracked films at once (min. 3) since that's more likely a broken
+  scrape than a real edit. `reconcileWatched
   (list, watchedTmdbIds)` queues anything still on the list the owner has watched; `deleteList(id)`
   deletes a list and either pins its Filmstrip-added films (if `List.permanence`) or runs them
   through the keeper-rule with reason `list_deleted`. All funnel through the same internal

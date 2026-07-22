@@ -15,6 +15,8 @@ export type Tx = Prisma.TransactionClient;
  * deletion_queued  -- left every list it was wanted on (or watched/list-deleted); a DeletionRequest
  *                      is open for review. Only reachable from `added`.
  * deleted          -- an approved DeletionRequest resolved; actually removed from Radarr/disk.
+ *                      Reachable again from `wanted` if the film reappears on a list -- Radarr
+ *                      genuinely doesn't have it anymore, so it's a real re-add, not a duplicate.
  * kept             -- a DeletionRequest was resolved via Keep, or a permanence-on list deletion
  *                      pinned it. Terminal: never transitions away from `kept` on its own, matching
  *                      today's one-way "hands off forever" pinned semantics.
@@ -37,6 +39,7 @@ export type MovieEventType =
   | 'deletion_queue_cancelled'
   | 'deleted'
   | 'kept'
+  | 'revived'
   | 'backfilled';
 
 export interface MovieEventInput {

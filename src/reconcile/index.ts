@@ -160,17 +160,23 @@ const MASS_DROP_RATIO = 0.5;
 /**
  * Reconcile one list after a sync: any film previously present that's no longer in this scrape
  * gets presentOnList=false and runs through the keeper-rule; any film previously marked gone
- * that's back in this scrape gets presentOnList restored, and any pending left_list request whose
- * claim no longer holds is cancelled — checked for every film confirmed present this run, not
- * just ones that just returned, so a request left stranded by a past bad scrape (from before this
- * existed) still self-heals. Refuses to apply a drop that looks like a broken scrape rather than
- * a real edit (see MASS_DROP_*). Never throws — a failure evaluating one film is logged and the
- * rest still run.
+ * that's back in this scrape gets presentOnList restored (and, if it was 'deleted', revived to
+ * 'wanted' so the scheduler retries adding it — a real re-add, not a duplicate, since Radarr
+ * genuinely doesn't have it anymore), and any pending left_list request whose claim no longer
+ * holds is cancelled — checked for every film confirmed present this run, not just ones that just
+ * returned, so a request left stranded by a past bad scrape (from before this existed) still
+ * self-heals. Refuses to apply a drop that looks like a broken scrape rather than a real edit (see
+ * MASS_DROP_*). Never throws — a failure evaluating one film is logged and the rest still run.
  */
 export async function reconcileList(list: ListWithUser, currentTmdbIds: Set<number>): Promise<void> {
   const existing = await prisma.listMovie.findMany({
     where: { listId: list.id },
-    select: { id: true, movieId: true, presentOnList: true, movie: { select: { tmdbId: true } } },
+    select: {
+      id: true,
+      movieId: true,
+      presentOnList: true,
+      movie: { select: { tmdbId: true, state: true } },
+    },
   });
 
   const currentlyPresent = existing.filter((lm) => lm.presentOnList);
@@ -187,6 +193,16 @@ export async function reconcileList(list: ListWithUser, currentTmdbIds: Set<numb
         data: { presentOnList: true, removedFromListAt: null, lastSeenAt: new Date() },
       });
       await logMovieEvent(tx, lm.movieId, { type: 'restored_to_list', listId: list.id });
+      // A deleted film reappearing on a list is a genuine re-add -- Radarr doesn't have it
+      // anymore, so this isn't a duplicate. Revive it to 'wanted' so the scheduler's dedup
+      // (which skips anything not 'wanted') lets the next sync retry adding it.
+      if (lm.movie.state === 'deleted') {
+        await transitionMovie(tx, lm.movieId, 'wanted', {
+          type: 'revived',
+          detail: 'reappeared on a list after being deleted -- will be retried',
+          listId: list.id,
+        });
+      }
     });
   }
 

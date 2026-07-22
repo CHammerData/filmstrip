@@ -99,9 +99,11 @@ Module layout:
 - **`src/reconcile/index.ts`** — the keeper-rule (DESIGN.md §4-§6). `reconcileList(list,
   currentTmdbIds)` flips `ListMovie.presentOnList` false for anything no longer scraped and
   restores it true for anything that reappears after being marked gone (logging a paired
-  `left_list`/`restored_to_list` `MovieEvent` either way, for every film regardless of state);
-  refuses to drop more than half of a list's currently-tracked films at once (min. 3) since that's
-  more likely a broken scrape than a real edit. It also cancels any pending `left_list`
+  `left_list`/`restored_to_list` `MovieEvent` either way, for every film regardless of state); a
+  `deleted` film that reappears is additionally revived to `wanted` (a real re-add, since Radarr no
+  longer has it) so the scheduler's dedup lets the next sync retry it. Refuses to drop more than
+  half of a list's currently-tracked films at once (min. 3) since that's more likely a broken
+  scrape than a real edit. It also cancels any pending `left_list`
   `DeletionRequest`, transitions the film back to `added`, and re-monitors in Radarr for any film
   confirmed present this run, not just newly-returned ones — self-heals a request stranded by a bad
   scrape from before this existed. `evaluateForDeletion`'s gate is `Movie.state === 'added'`,

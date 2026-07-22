@@ -118,7 +118,9 @@ pre_existing     -- Radarr said "already exists" -- never eligible for deletion_
 added            -- Filmstrip's own add succeeded; actively managed
 deletion_queued  -- left every list it was wanted on (or watched/list-deleted); DeletionRequest
                     open for review. Only reachable from 'added'
-deleted          -- an approved DeletionRequest resolved; removed from Radarr/disk
+deleted          -- an approved DeletionRequest resolved; removed from Radarr/disk. Revived to
+                    'wanted' if the film reappears on a list -- a genuine re-add, not a duplicate,
+                    since Radarr no longer has it
 kept             -- resolved via Keep, or a permanence-on list deletion. Terminal: never
                     transitions away on its own -- the one-way "hands off forever" guarantee
 ```
@@ -129,6 +131,11 @@ happened at the transition into it. A film reaches it by:
 - deleting a list whose **permanence** is on (its Filmstrip-managed films transition straight to
   `kept` so they survive) — built (`deleteList` in `src/reconcile`). With permanence off, deleting
   a list instead runs its films through the keeper-rule (reason `list_deleted`).
+
+`kept` and `deleted` are not symmetric on purpose: `kept` means "never manage this film again,
+regardless of what happens to it later" (matches the old one-way `pinned` semantics exactly), while
+`deleted` just means "not currently in Radarr" — the moment the owner re-adds it to a list, that's
+a fresh, legitimate want, so `reconcileList` revives it to `wanted` instead of leaving it stranded.
 
 `MovieEvent` also records per-list `seen_on_list`/`left_list`/`restored_to_list` events for
 **every** film regardless of state — including `pre_existing` ones, which otherwise have no

@@ -191,6 +191,37 @@ describe('reconcileList', () => {
     expect(mockPrisma.deletionRequest.create).not.toHaveBeenCalled();
   });
 
+  it('revives a deleted movie to wanted when it reappears on a list', async () => {
+    mockPrisma.listMovie.findMany.mockResolvedValue([
+      { id: 1, movieId: 1, presentOnList: false, movie: { tmdbId: 100, state: 'deleted' } },
+    ]);
+
+    await reconcileList(makeList(), new Set([100]));
+
+    expect(mockPrisma.movie.update).toHaveBeenCalledWith({ where: { id: 1 }, data: { state: 'wanted' } });
+    expect(mockPrisma.movieEvent.create).toHaveBeenCalledWith({
+      data: {
+        movieId: 1,
+        type: 'revived',
+        detail: 'reappeared on a list after being deleted -- will be retried',
+        listId: 10,
+      },
+    });
+  });
+
+  it('does not revive a kept movie when it reappears on a list', async () => {
+    mockPrisma.listMovie.findMany.mockResolvedValue([
+      { id: 1, movieId: 1, presentOnList: false, movie: { tmdbId: 100, state: 'kept' } },
+    ]);
+
+    await reconcileList(makeList(), new Set([100]));
+
+    expect(mockPrisma.movie.update).not.toHaveBeenCalled();
+    expect(mockPrisma.movieEvent.create).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ type: 'revived' }) })
+    );
+  });
+
   it('refuses to drop the majority of a list at once, treating it as a broken scrape', async () => {
     // 3 of 4 currently-tracked films missing from this scrape -- above both the minimum count
     // and the ratio threshold -- should be skipped rather than trusted.

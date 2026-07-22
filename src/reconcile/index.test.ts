@@ -130,7 +130,7 @@ describe('reconcileList', () => {
 
   it('does nothing when every tracked movie is still on the list', async () => {
     mockPrisma.listMovie.findMany.mockResolvedValue([
-      { id: 1, movieId: 1, movie: { tmdbId: 100 } },
+      { id: 1, movieId: 1, presentOnList: true, movie: { tmdbId: 100 } },
     ]);
 
     await reconcileList(makeList(), new Set([100]));
@@ -141,7 +141,7 @@ describe('reconcileList', () => {
 
   it('marks a dropped-off movie not present, and opens a DeletionRequest when eligible', async () => {
     mockPrisma.listMovie.findMany.mockResolvedValue([
-      { id: 1, movieId: 1, movie: { tmdbId: 100 } },
+      { id: 1, movieId: 1, presentOnList: true, movie: { tmdbId: 100 } },
     ]);
     mockPrisma.movie.findUnique.mockResolvedValue(makeMovie());
 
@@ -157,9 +157,56 @@ describe('reconcileList', () => {
     });
   });
 
+  it('restores a previously-dropped movie that has reappeared in the scrape', async () => {
+    mockPrisma.listMovie.findMany.mockResolvedValue([
+      { id: 1, movieId: 1, presentOnList: false, movie: { tmdbId: 100 } },
+    ]);
+
+    await reconcileList(makeList(), new Set([100]));
+
+    expect(mockPrisma.listMovie.update).toHaveBeenCalledWith({
+      where: { id: 1 },
+      data: { presentOnList: true, removedFromListAt: null, lastSeenAt: expect.any(Date) },
+    });
+    expect(mockPrisma.deletionRequest.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses to drop the majority of a list at once, treating it as a broken scrape', async () => {
+    // 3 of 4 currently-tracked films missing from this scrape -- above both the minimum count
+    // and the ratio threshold -- should be skipped rather than trusted.
+    mockPrisma.listMovie.findMany.mockResolvedValue([
+      { id: 1, movieId: 1, presentOnList: true, movie: { tmdbId: 100 } },
+      { id: 2, movieId: 2, presentOnList: true, movie: { tmdbId: 200 } },
+      { id: 3, movieId: 3, presentOnList: true, movie: { tmdbId: 300 } },
+      { id: 4, movieId: 4, presentOnList: true, movie: { tmdbId: 400 } },
+    ]);
+
+    await reconcileList(makeList(), new Set([100]));
+
+    expect(mockPrisma.listMovie.update).not.toHaveBeenCalled();
+    expect(mockPrisma.deletionRequest.create).not.toHaveBeenCalled();
+  });
+
+  it('still drops a small number of films even when that is more than half the list', async () => {
+    // Only 2 tracked films total -- below MASS_DROP_MIN_COUNT -- so a single legitimate
+    // removal (the overwhelmingly common real edit) must never be blocked by the guard.
+    mockPrisma.listMovie.findMany.mockResolvedValue([
+      { id: 1, movieId: 1, presentOnList: true, movie: { tmdbId: 100 } },
+      { id: 2, movieId: 2, presentOnList: true, movie: { tmdbId: 200 } },
+    ]);
+    mockPrisma.movie.findUnique.mockResolvedValue(makeMovie());
+
+    await reconcileList(makeList(), new Set([100]));
+
+    expect(mockPrisma.listMovie.update).toHaveBeenCalledWith({
+      where: { id: 2 },
+      data: { presentOnList: false, removedFromListAt: expect.any(Date) },
+    });
+  });
+
   it('does not open a DeletionRequest for a film not added by Filmstrip', async () => {
     mockPrisma.listMovie.findMany.mockResolvedValue([
-      { id: 1, movieId: 1, movie: { tmdbId: 100 } },
+      { id: 1, movieId: 1, presentOnList: true, movie: { tmdbId: 100 } },
     ]);
     mockPrisma.movie.findUnique.mockResolvedValue(makeMovie({ addedByFilmstrip: false }));
 
@@ -171,7 +218,7 @@ describe('reconcileList', () => {
 
   it('does not open a DeletionRequest for a pinned film', async () => {
     mockPrisma.listMovie.findMany.mockResolvedValue([
-      { id: 1, movieId: 1, movie: { tmdbId: 100 } },
+      { id: 1, movieId: 1, presentOnList: true, movie: { tmdbId: 100 } },
     ]);
     mockPrisma.movie.findUnique.mockResolvedValue(makeMovie({ pinned: true }));
 
@@ -182,7 +229,7 @@ describe('reconcileList', () => {
 
   it('does not open a DeletionRequest when another enabled list still wants the film', async () => {
     mockPrisma.listMovie.findMany.mockResolvedValue([
-      { id: 1, movieId: 1, movie: { tmdbId: 100 } },
+      { id: 1, movieId: 1, presentOnList: true, movie: { tmdbId: 100 } },
     ]);
     mockPrisma.movie.findUnique.mockResolvedValue(makeMovie());
     mockPrisma.listMovie.findFirst.mockResolvedValue({ id: 2 }); // still present on some other list
@@ -195,7 +242,7 @@ describe('reconcileList', () => {
 
   it('never touches a film carrying a foreign Radarr tag', async () => {
     mockPrisma.listMovie.findMany.mockResolvedValue([
-      { id: 1, movieId: 1, movie: { tmdbId: 100 } },
+      { id: 1, movieId: 1, presentOnList: true, movie: { tmdbId: 100 } },
     ]);
     mockPrisma.movie.findUnique.mockResolvedValue(makeMovie());
     (getMovieById as jest.Mock).mockResolvedValue({ id: 500, title: 'A Movie', tags: [1, 99] });
@@ -212,7 +259,7 @@ describe('reconcileList', () => {
 
   it('skips a film that already has a pending DeletionRequest', async () => {
     mockPrisma.listMovie.findMany.mockResolvedValue([
-      { id: 1, movieId: 1, movie: { tmdbId: 100 } },
+      { id: 1, movieId: 1, presentOnList: true, movie: { tmdbId: 100 } },
     ]);
     mockPrisma.movie.findUnique.mockResolvedValue(makeMovie());
     mockPrisma.deletionRequest.findFirst.mockResolvedValue({ id: 5, status: 'pending' });
@@ -224,7 +271,7 @@ describe('reconcileList', () => {
 
   it('does not throw when evaluating one movie fails, and still updates presentOnList', async () => {
     mockPrisma.listMovie.findMany.mockResolvedValue([
-      { id: 1, movieId: 1, movie: { tmdbId: 100 } },
+      { id: 1, movieId: 1, presentOnList: true, movie: { tmdbId: 100 } },
     ]);
     mockPrisma.movie.findUnique.mockRejectedValue(new Error('db boom'));
 

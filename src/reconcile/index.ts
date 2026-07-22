@@ -95,21 +95,50 @@ async function evaluateForDeletion(movieId: number, candidate: DeletionCandidate
   logger.info(`Marked "${radarrMovie.title}" for deletion review (${why}).`);
 }
 
+// A single scrape that would drop more than half of a list's currently-tracked films (and at
+// least this many) is more likely a broken/interstitial page load -- a bot-check or transient
+// near-empty render can return HTTP 200 with only a handful of links -- than a genuine mass
+// removal from the Letterboxd list. Below this count, dropping is always trusted: removing one
+// or two films from a small list is the overwhelmingly common real edit, not a bad scrape.
+const MASS_DROP_MIN_COUNT = 3;
+const MASS_DROP_RATIO = 0.5;
+
 /**
- * Reconcile one list after a sync: any film previously present that's no longer in this
- * scrape gets presentOnList=false, then is run through the keeper-rule. Never throws —
- * a failure evaluating one film is logged and the rest still run.
+ * Reconcile one list after a sync: any film previously present that's no longer in this scrape
+ * gets presentOnList=false and runs through the keeper-rule; any film previously marked gone
+ * that's back in this scrape gets presentOnList restored. Refuses to apply a drop that looks
+ * like a broken scrape rather than a real edit (see MASS_DROP_*). Never throws — a failure
+ * evaluating one film is logged and the rest still run.
  */
 export async function reconcileList(list: ListWithUser, currentTmdbIds: Set<number>): Promise<void> {
   const existing = await prisma.listMovie.findMany({
-    where: { listId: list.id, presentOnList: true },
-    select: { id: true, movieId: true, movie: { select: { tmdbId: true } } },
+    where: { listId: list.id },
+    select: { id: true, movieId: true, presentOnList: true, movie: { select: { tmdbId: true } } },
   });
-  const droppedOff = existing.filter((lm) => !currentTmdbIds.has(lm.movie.tmdbId));
-  if (droppedOff.length === 0) return;
+
+  const currentlyPresent = existing.filter((lm) => lm.presentOnList);
+  const droppedOff = currentlyPresent.filter((lm) => !currentTmdbIds.has(lm.movie.tmdbId));
+  const returned = existing.filter((lm) => !lm.presentOnList && currentTmdbIds.has(lm.movie.tmdbId));
 
   // Sequential: SQLite is single-writer, so fanning these updates out with Promise.all can contend
-  // for the write lock on a list that dropped many films at once (see scheduler's upsert loop).
+  // for the write lock on a list with many changes at once (see scheduler's upsert loop).
+  for (const lm of returned) {
+    await prisma.listMovie.update({
+      where: { id: lm.id },
+      data: { presentOnList: true, removedFromListAt: null, lastSeenAt: new Date() },
+    });
+  }
+
+  if (droppedOff.length === 0) return;
+
+  if (droppedOff.length >= MASS_DROP_MIN_COUNT && droppedOff.length / currentlyPresent.length > MASS_DROP_RATIO) {
+    logger.warn(
+      `Reconcile: scrape for list "${list.label}" would drop ${droppedOff.length}/${currentlyPresent.length} ` +
+        `tracked film(s) at once -- treating as a broken scrape and skipping this run's drop.`
+    );
+    return;
+  }
+
   for (const lm of droppedOff) {
     await prisma.listMovie.update({
       where: { id: lm.id },

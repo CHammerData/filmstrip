@@ -12,6 +12,13 @@ const STATUS_META: Record<RadarrStatus, { label: string; color: string }> = {
 
 const STATUS_FILTERS = ['all', 'downloaded', 'wanted', 'unmonitored', 'not_in_radarr', 'unknown'] as const;
 
+const PROVENANCE_META: Record<'true' | 'false', { label: string; color: string }> = {
+  true: { label: 'Added by Filmstrip', color: 'var(--ok)' },
+  false: { label: 'Pre-existing', color: 'var(--muted)' },
+};
+
+const PROVENANCE_FILTERS = ['all', 'true', 'false'] as const;
+
 function formatSize(bytes: number): string {
   if (!bytes) return '—';
   const gb = bytes / 1024 ** 3;
@@ -31,29 +38,46 @@ function StatusBadge({ status }: { status: RadarrStatus }) {
   );
 }
 
+function ProvenanceBadge({ addedByFilmstrip }: { addedByFilmstrip: boolean }) {
+  const meta = PROVENANCE_META[addedByFilmstrip ? 'true' : 'false'];
+  return (
+    <span
+      className="badge"
+      style={{ background: 'transparent', border: `1px solid ${meta.color}`, color: meta.color }}
+      title="Whether Filmstrip itself added this film to Radarr, or it already existed -- only films Filmstrip added are ever eligible for its deletion workflow (DESIGN.md §2)."
+    >
+      {meta.label}
+    </span>
+  );
+}
+
 export default function Movies() {
   const movies = useLoad<MovieRow[]>(() => get('/movies'));
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState<(typeof STATUS_FILTERS)[number]>('all');
+  const [provenance, setProvenance] = useState<(typeof PROVENANCE_FILTERS)[number]>('all');
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return (movies.data ?? []).filter((m) => {
       if (status !== 'all' && m.radarrStatus !== status) return false;
+      if (provenance !== 'all' && String(m.addedByFilmstrip) !== provenance) return false;
       if (!q) return true;
       return (
         m.title.toLowerCase().includes(q) ||
         m.sources.some((s) => s.listLabel.toLowerCase().includes(q) || s.ownerName.toLowerCase().includes(q))
       );
     });
-  }, [movies.data, query, status]);
+  }, [movies.data, query, status, provenance]);
 
   return (
     <div>
       <h1>Movies</h1>
       <p className="muted">
-        Every film Filmstrip tracks — the list(s) that added it, the owner(s) behind those lists, and
-        its current status in Radarr.
+        Every film Filmstrip tracks — the list(s) that added it, the owner(s) behind those lists, its
+        current status in Radarr, and whether Filmstrip itself added it. Only films Filmstrip added
+        are ever eligible for its deletion workflow — a pre-existing film leaving a list is never
+        queued for review.
       </p>
 
       <div className="row" style={{ marginBottom: 12 }}>
@@ -75,6 +99,16 @@ export default function Movies() {
             ))}
           </select>
         </label>
+        <label style={{ flex: 'none', width: 200 }}>
+          <span>Provenance</span>
+          <select value={provenance} onChange={(e) => setProvenance(e.target.value as typeof provenance)}>
+            {PROVENANCE_FILTERS.map((p) => (
+              <option key={p} value={p}>
+                {p === 'all' ? 'all' : PROVENANCE_META[p].label}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
 
       {movies.loading && <p className="muted">Loading…</p>}
@@ -89,6 +123,7 @@ export default function Movies() {
               <th>Added by lists</th>
               <th>Owner(s)</th>
               <th>Radarr status</th>
+              <th>Provenance</th>
               <th>On disk</th>
             </tr>
           </thead>
@@ -126,6 +161,9 @@ export default function Movies() {
                   <td className="muted">{owners.length ? owners.join(', ') : '—'}</td>
                   <td>
                     <StatusBadge status={m.radarrStatus} />
+                  </td>
+                  <td>
+                    <ProvenanceBadge addedByFilmstrip={m.addedByFilmstrip} />
                   </td>
                   <td className="muted">{m.radarr ? formatSize(m.radarr.sizeOnDisk) : '—'}</td>
                 </tr>

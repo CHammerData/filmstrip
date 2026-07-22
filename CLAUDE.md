@@ -91,7 +91,12 @@ Module layout:
   currentTmdbIds)` flips `ListMovie.presentOnList` false for anything no longer scraped and
   restores it true for anything that reappears after being marked gone; refuses to drop more than
   half of a list's currently-tracked films at once (min. 3) since that's more likely a broken
-  scrape than a real edit. `reconcileWatched
+  scrape than a real edit. It also cancels any pending `left_list` `DeletionRequest` (and
+  re-monitors in Radarr) for any film confirmed present this run, not just newly-returned ones —
+  self-heals a request stranded by a bad scrape from before this existed. `evaluateForDeletion`'s
+  pending-request check is re-verified inside a transaction right before creating, closing a race
+  where an overlapping manual sync + scheduler tick could otherwise double-create a request.
+  `reconcileWatched
   (list, watchedTmdbIds)` queues anything still on the list the owner has watched; `deleteList(id)`
   deletes a list and either pins its Filmstrip-added films (if `List.permanence`) or runs them
   through the keeper-rule with reason `list_deleted`. All funnel through the same internal

@@ -122,6 +122,15 @@ permanently, with no self-correction. As a second guard against that same failur
 that would drop more than half of a list's currently-tracked films at once (and at least 3) is
 treated as a broken scrape rather than a real edit, and skipped for that run.
 
+For every film confirmed present this run (not only ones that just returned — a request left
+stranded by a bad scrape from before this existed needs to self-heal too), `reconcileList` also
+cancels any pending `left_list` `DeletionRequest` and re-monitors the film in Radarr: being
+confirmed on a list directly contradicts a `left_list` claim. Scoped to `left_list` only —
+`watched`/`list_deleted` claims don't become false just because the film is on a list (see §6).
+`evaluateForDeletion`'s pending-request check-then-create is wrapped in a transaction to close a
+race window (a manual "sync now" overlapping the scheduler tick could otherwise create two
+pending requests for the same film).
+
 ## 6. Deletion = mark → review → resolve **[M3 ✅]**
 
 Default action is **delete (with file)**, but never without review.

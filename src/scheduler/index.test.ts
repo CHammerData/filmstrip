@@ -1,11 +1,15 @@
 import { List, Settings, User } from '@prisma/client';
 
-const mockPrisma = {
+const mockPrisma: any = {
   settings: { findUnique: jest.fn() },
   syncRun: { create: jest.fn(), update: jest.fn() },
-  movie: { upsert: jest.fn() },
-  listMovie: { findMany: jest.fn(), upsert: jest.fn() },
+  movie: { upsert: jest.fn(), update: jest.fn(), findUnique: jest.fn() },
+  movieEvent: { create: jest.fn() },
+  listMovie: { findMany: jest.fn(), findUnique: jest.fn(), update: jest.fn(), upsert: jest.fn() },
   list: { update: jest.fn(), findUnique: jest.fn(), findMany: jest.fn() },
+  // Phase A/C wrap their writes in a transaction; running the callback against mockPrisma itself
+  // keeps every mock (movie.upsert, movieEvent.create, ...) shared as-is (see reconcile's tests).
+  $transaction: jest.fn((cb: (tx: unknown) => unknown) => cb(mockPrisma)),
 };
 
 jest.mock('../db/client', () => ({ __esModule: true, default: mockPrisma }));
@@ -103,10 +107,19 @@ describe('syncList', () => {
     mockPrisma.syncRun.create.mockResolvedValue({ id: 99 });
     mockPrisma.syncRun.update.mockResolvedValue({});
     mockPrisma.listMovie.findMany.mockResolvedValue([]);
+    // Phase A: create/find the Movie row (state defaults 'wanted' -- matches the schema default a
+    // real create would get). id is derived from tmdbId purely for these tests' convenience.
     mockPrisma.movie.upsert.mockImplementation(({ where, create }: any) =>
-      Promise.resolve({ id: where.tmdbId, ...create })
+      Promise.resolve({ id: where.tmdbId, state: 'wanted', radarrMovieId: null, ...create })
     );
+    mockPrisma.listMovie.findUnique.mockResolvedValue(null); // never seen on this list before
     mockPrisma.listMovie.upsert.mockResolvedValue({});
+    // Phase C: look the Movie back up by tmdbId after the Radarr attempt.
+    mockPrisma.movie.findUnique.mockImplementation(({ where }: any) =>
+      Promise.resolve({ id: where.tmdbId, tmdbId: where.tmdbId, state: 'wanted', radarrMovieId: null })
+    );
+    mockPrisma.movie.update.mockResolvedValue({});
+    mockPrisma.listMovie.update.mockResolvedValue({});
     mockPrisma.list.update.mockResolvedValue({});
     (reconcileList as jest.Mock).mockResolvedValue(undefined);
     (reconcileWatched as jest.Mock).mockResolvedValue(undefined);
@@ -129,14 +142,21 @@ describe('syncList', () => {
     const result = await syncList(makeList());
 
     expect(result).toMatchObject({ status: 'success', found: 2, added: 2, failed: 0 });
+    // Phase A creates a row for every attempted movie, before Radarr is even called.
     expect(mockPrisma.movie.upsert).toHaveBeenCalledTimes(2);
     expect(mockPrisma.movie.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { tmdbId: 1 },
-        create: expect.objectContaining({ tmdbId: 1, addedByFilmstrip: true, radarrMovieId: 100 }),
+        create: expect.objectContaining({ tmdbId: 1, title: 'A', year: 2020 }),
       })
     );
     expect(mockPrisma.listMovie.upsert).toHaveBeenCalledTimes(2);
+    // Phase C: radarrMovieId recorded and state transitioned to 'added' for each.
+    expect(mockPrisma.movie.update).toHaveBeenCalledWith({ where: { id: 1 }, data: { radarrMovieId: 100 } });
+    expect(mockPrisma.movie.update).toHaveBeenCalledWith({ where: { id: 1 }, data: { state: 'added' } });
+    expect(mockPrisma.movieEvent.create).toHaveBeenCalledWith({
+      data: { movieId: 1, type: 'added_to_radarr' },
+    });
     expect(reconcileList).toHaveBeenCalledWith(expect.objectContaining({ id: 10 }), new Set([1, 2]));
     expect(mockPrisma.syncRun.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -150,7 +170,7 @@ describe('syncList', () => {
   });
 
   it('dedups already-synced movies before upserting', async () => {
-    mockPrisma.listMovie.findMany.mockResolvedValue([{ movie: { tmdbId: 1 } }]);
+    mockPrisma.listMovie.findMany.mockResolvedValue([{ movie: { tmdbId: 1, state: 'added' } }]);
     (fetchMoviesFromUrl as jest.Mock).mockResolvedValue([movieA, movieB]);
     (upsertMovies as jest.Mock).mockResolvedValue({
       added: 1,
@@ -306,11 +326,19 @@ describe('syncList', () => {
     const result = await syncList(makeList());
 
     expect(result.status).toBe('partial');
-    // 'failed' outcomes are not recorded, so they retry next run.
-    expect(mockPrisma.movie.upsert).toHaveBeenCalledTimes(1);
+    // Both attempted movies get a Phase A row (state 'wanted') before Radarr is even called --
+    // the failed one just logs a radarr_add_failed event and stays 'wanted' to retry next sync.
+    expect(mockPrisma.movie.upsert).toHaveBeenCalledTimes(2);
+    expect(mockPrisma.movieEvent.create).toHaveBeenCalledWith({
+      data: { movieId: 2, type: 'radarr_add_failed', detail: 'boom' },
+    });
+    // A failed attempt never transitions state away from 'wanted'.
+    expect(mockPrisma.movie.update).not.toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 2 } })
+    );
   });
 
-  it('marks an existing film as not added-by-filmstrip when Radarr reports it already exists', async () => {
+  it('marks an existing film pre_existing when Radarr reports it already exists', async () => {
     (fetchMoviesFromUrl as jest.Mock).mockResolvedValue([movieA]);
     (upsertMovies as jest.Mock).mockResolvedValue({
       added: 0,
@@ -321,11 +349,46 @@ describe('syncList', () => {
 
     await syncList(makeList());
 
-    expect(mockPrisma.movie.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        create: expect.objectContaining({ addedByFilmstrip: false }),
-      })
-    );
+    expect(mockPrisma.movie.update).toHaveBeenCalledWith({
+      where: { id: 1 },
+      data: { state: 'pre_existing' },
+    });
+    expect(mockPrisma.movieEvent.create).toHaveBeenCalledWith({
+      data: { movieId: 1, type: 'already_in_radarr' },
+    });
+  });
+
+  it('retries a movie still in "wanted" state (a previous add failed) rather than treating it as seen', async () => {
+    mockPrisma.listMovie.findMany.mockResolvedValue([{ movie: { tmdbId: 1, state: 'wanted' } }]);
+    (fetchMoviesFromUrl as jest.Mock).mockResolvedValue([movieA]);
+    (upsertMovies as jest.Mock).mockResolvedValue({
+      added: 1,
+      skipped: 0,
+      failed: 0,
+      results: [{ movie: movieA, status: 'added', radarrMovieId: 100 }],
+    });
+
+    const result = await syncList(makeList());
+
+    expect(upsertMovies).toHaveBeenCalledWith(expect.anything(), [movieA], expect.anything());
+    expect(result).toMatchObject({ found: 1, added: 1, skipped: 0 });
+  });
+
+  it('does not re-log seen_on_list for a movie already tracked on this list', async () => {
+    mockPrisma.listMovie.findUnique.mockResolvedValue({ id: 5 }); // already has a row for this list
+    (fetchMoviesFromUrl as jest.Mock).mockResolvedValue([movieA]);
+    (upsertMovies as jest.Mock).mockResolvedValue({
+      added: 1,
+      skipped: 0,
+      failed: 0,
+      results: [{ movie: movieA, status: 'added', radarrMovieId: 100 }],
+    });
+
+    await syncList(makeList());
+
+    expect(mockPrisma.movieEvent.create).not.toHaveBeenCalledWith({
+      data: { movieId: 1, type: 'seen_on_list', listId: 10 },
+    });
   });
 
   it('records a failed run when scraping throws', async () => {

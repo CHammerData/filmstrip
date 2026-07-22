@@ -61,8 +61,7 @@ export function moviesRouter(): Router {
           tmdbId: m.tmdbId,
           title: m.title,
           year: m.year,
-          addedByFilmstrip: m.addedByFilmstrip,
-          pinned: m.pinned,
+          state: m.state,
           radarrStatus: deriveStatus(radarr, radarrAvailable),
           radarr: radarr
             ? {

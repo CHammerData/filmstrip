@@ -7,6 +7,7 @@ import {
   setMonitored,
   deleteMovie,
 } from '../api/radarr';
+import { transitionMovie, logMovieEvent } from '../movieState';
 import logger from '../util/logger';
 
 /** Build a Radarr client from the singleton Settings row. Throws if unconfigured. */
@@ -39,13 +40,13 @@ interface DeletionCandidate {
 
 /**
  * The keeper-rule (DESIGN.md §5): is this film a removal candidate? If so, unmonitor it in
- * Radarr (file kept) and open a pending DeletionRequest. No-ops if the film is still wanted
- * (when required), not Filmstrip's to manage, already pinned, already pending, or carries a
- * foreign tag.
+ * Radarr (file kept), transition it to deletion_queued, and open a pending DeletionRequest.
+ * No-ops if the film is still wanted (when required), isn't currently `added` (covers not
+ * Filmstrip's to manage, already queued/deleted/kept), or carries a foreign tag.
  */
 async function evaluateForDeletion(movieId: number, candidate: DeletionCandidate): Promise<void> {
   const movie = await prisma.movie.findUnique({ where: { id: movieId } });
-  if (!movie || !movie.addedByFilmstrip || movie.pinned) return;
+  if (!movie || movie.state !== 'added') return;
 
   if (candidate.requireNotWanted) {
     const stillWanted = await prisma.listMovie.findFirst({
@@ -53,11 +54,6 @@ async function evaluateForDeletion(movieId: number, candidate: DeletionCandidate
     });
     if (stillWanted) return;
   }
-
-  const alreadyPending = await prisma.deletionRequest.findFirst({
-    where: { movieId, status: 'pending' },
-  });
-  if (alreadyPending) return;
 
   if (!movie.radarrMovieId) {
     logger.warn(`Movie id=${movieId} (tmdb=${movie.tmdbId}) has no radarrMovieId; skipping.`);
@@ -83,19 +79,24 @@ async function evaluateForDeletion(movieId: number, candidate: DeletionCandidate
   }
 
   await setMonitored(client, radarrMovie, false);
-  // Re-check-and-create atomically: the gap between the alreadyPending check above and here
-  // spans several awaited Radarr calls, wide enough for two concurrent evaluations of the same
-  // movie (e.g. a manual "sync now" overlapping the scheduler tick) to both pass the early check
-  // and both create a request. Re-checking inside the transaction closes that window.
-  const created = await prisma.$transaction(async (tx) => {
-    const stillPending = await tx.deletionRequest.findFirst({ where: { movieId, status: 'pending' } });
-    if (stillPending) return false;
+  // Re-check-and-transition atomically: the gap between the state check above and here spans
+  // several awaited Radarr calls, wide enough for two concurrent evaluations of the same movie
+  // (e.g. a manual "sync now" overlapping the scheduler tick) to both pass the early check before
+  // either transitions it. Re-checking state inside the transaction closes that window.
+  const transitioned = await prisma.$transaction(async (tx) => {
+    const current = await tx.movie.findUnique({ where: { id: movieId } });
+    if (!current || current.state !== 'added') return false;
+    await transitionMovie(tx, movieId, 'deletion_queued', {
+      type: 'deletion_queued',
+      detail: candidate.reason,
+      listId: candidate.triggeredByListId ?? undefined,
+    });
     await tx.deletionRequest.create({
       data: { movieId, reason: candidate.reason, triggeredByListId: candidate.triggeredByListId, status: 'pending' },
     });
     return true;
   });
-  if (!created) return;
+  if (!transitioned) return;
 
   const why =
     candidate.reason === 'watched'
@@ -109,10 +110,10 @@ async function evaluateForDeletion(movieId: number, candidate: DeletionCandidate
 /**
  * A pending left_list request claims a film left every enabled list it was on. If that film is
  * now confirmed present on a list — because it never really left, or a later scrape corrected an
- * earlier bad one — the claim no longer holds. Cancel the request and re-monitor in Radarr
- * (evaluateForDeletion unmonitored it when the request was raised). Sweeps every matching pending
- * request for the movie, not just one, so a duplicate left over from before this existed also
- * clears in one pass. Never throws — logged and skipped on failure.
+ * earlier bad one — the claim no longer holds. Cancel the request, transition back to `added`, and
+ * re-monitor in Radarr (evaluateForDeletion unmonitored it when the request was raised). Sweeps
+ * every matching pending request for the movie, not just one, so a duplicate left over from
+ * before this existed also clears in one pass. Never throws — logged and skipped on failure.
  */
 async function cancelStaleLeftListRequests(movieId: number): Promise<void> {
   const pending = await prisma.deletionRequest.findMany({
@@ -134,7 +135,15 @@ async function cancelStaleLeftListRequests(movieId: number): Promise<void> {
     }
   }
 
-  await prisma.deletionRequest.deleteMany({ where: { id: { in: pending.map((p) => p.id) } } });
+  await prisma.$transaction(async (tx) => {
+    await tx.deletionRequest.deleteMany({ where: { id: { in: pending.map((p) => p.id) } } });
+    if (movie && movie.state === 'deletion_queued') {
+      await transitionMovie(tx, movieId, 'added', {
+        type: 'deletion_queue_cancelled',
+        detail: 'confirmed still on a tracked list',
+      });
+    }
+  });
   logger.info(
     `Cancelled ${pending.length} stale left_list deletion request(s) for movie id=${movieId} -- confirmed still on a tracked list.`
   );
@@ -151,17 +160,23 @@ const MASS_DROP_RATIO = 0.5;
 /**
  * Reconcile one list after a sync: any film previously present that's no longer in this scrape
  * gets presentOnList=false and runs through the keeper-rule; any film previously marked gone
- * that's back in this scrape gets presentOnList restored, and any pending left_list request whose
- * claim no longer holds is cancelled — checked for every film confirmed present this run, not
- * just ones that just returned, so a request left stranded by a past bad scrape (from before this
- * existed) still self-heals. Refuses to apply a drop that looks like a broken scrape rather than
- * a real edit (see MASS_DROP_*). Never throws — a failure evaluating one film is logged and the
- * rest still run.
+ * that's back in this scrape gets presentOnList restored (and, if it was 'deleted', revived to
+ * 'wanted' so the scheduler retries adding it — a real re-add, not a duplicate, since Radarr
+ * genuinely doesn't have it anymore), and any pending left_list request whose claim no longer
+ * holds is cancelled — checked for every film confirmed present this run, not just ones that just
+ * returned, so a request left stranded by a past bad scrape (from before this existed) still
+ * self-heals. Refuses to apply a drop that looks like a broken scrape rather than a real edit (see
+ * MASS_DROP_*). Never throws — a failure evaluating one film is logged and the rest still run.
  */
 export async function reconcileList(list: ListWithUser, currentTmdbIds: Set<number>): Promise<void> {
   const existing = await prisma.listMovie.findMany({
     where: { listId: list.id },
-    select: { id: true, movieId: true, presentOnList: true, movie: { select: { tmdbId: true } } },
+    select: {
+      id: true,
+      movieId: true,
+      presentOnList: true,
+      movie: { select: { tmdbId: true, state: true } },
+    },
   });
 
   const currentlyPresent = existing.filter((lm) => lm.presentOnList);
@@ -172,9 +187,22 @@ export async function reconcileList(list: ListWithUser, currentTmdbIds: Set<numb
   // Sequential: SQLite is single-writer, so fanning these updates out with Promise.all can contend
   // for the write lock on a list with many changes at once (see scheduler's upsert loop).
   for (const lm of returned) {
-    await prisma.listMovie.update({
-      where: { id: lm.id },
-      data: { presentOnList: true, removedFromListAt: null, lastSeenAt: new Date() },
+    await prisma.$transaction(async (tx) => {
+      await tx.listMovie.update({
+        where: { id: lm.id },
+        data: { presentOnList: true, removedFromListAt: null, lastSeenAt: new Date() },
+      });
+      await logMovieEvent(tx, lm.movieId, { type: 'restored_to_list', listId: list.id });
+      // A deleted film reappearing on a list is a genuine re-add -- Radarr doesn't have it
+      // anymore, so this isn't a duplicate. Revive it to 'wanted' so the scheduler's dedup
+      // (which skips anything not 'wanted') lets the next sync retry adding it.
+      if (lm.movie.state === 'deleted') {
+        await transitionMovie(tx, lm.movieId, 'wanted', {
+          type: 'revived',
+          detail: 'reappeared on a list after being deleted -- will be retried',
+          listId: list.id,
+        });
+      }
     });
   }
 
@@ -197,9 +225,12 @@ export async function reconcileList(list: ListWithUser, currentTmdbIds: Set<numb
   }
 
   for (const lm of droppedOff) {
-    await prisma.listMovie.update({
-      where: { id: lm.id },
-      data: { presentOnList: false, removedFromListAt: new Date() },
+    await prisma.$transaction(async (tx) => {
+      await tx.listMovie.update({
+        where: { id: lm.id },
+        data: { presentOnList: false, removedFromListAt: new Date() },
+      });
+      await logMovieEvent(tx, lm.movieId, { type: 'left_list', listId: list.id });
     });
   }
 
@@ -258,15 +289,24 @@ export async function deleteList(listId: number): Promise<void> {
 
   const members = await prisma.listMovie.findMany({
     where: { listId },
-    select: { movieId: true, movie: { select: { addedByFilmstrip: true } } },
+    select: { movieId: true, movie: { select: { state: true } } },
   });
 
   await prisma.list.delete({ where: { id: listId } }); // cascade-removes this list's ListMovie rows
 
   if (list.permanence) {
-    const toPin = members.filter((m) => m.movie.addedByFilmstrip).map((m) => m.movieId);
-    if (toPin.length > 0) {
-      await prisma.movie.updateMany({ where: { id: { in: toPin } }, data: { pinned: true } });
+    // "Filmstrip-managed" here means it was ever confirmed added (added/deletion_queued/deleted/
+    // kept) -- excludes pre_existing (never Filmstrip's) and wanted (not yet confirmed).
+    const toPin = members
+      .filter((m) => m.movie.state !== 'pre_existing' && m.movie.state !== 'wanted')
+      .map((m) => m.movieId);
+    for (const movieId of toPin) {
+      await prisma.$transaction((tx) =>
+        transitionMovie(tx, movieId, 'kept', {
+          type: 'kept',
+          detail: `list "${list.label}" deleted with permanence on`,
+        })
+      );
     }
     logger.info(`List "${list.label}" deleted (permanence on): pinned ${toPin.length} film(s).`);
     return;
@@ -304,9 +344,15 @@ export async function approveDeletion(requestId: number): Promise<void> {
   const deleteFiles = request.triggeredByList?.deleteFiles ?? true;
   await deleteMovie(client, request.movie.radarrMovieId, deleteFiles);
 
-  await prisma.deletionRequest.update({
-    where: { id: requestId },
-    data: { status: 'approved', resolvedAt: new Date() },
+  await prisma.$transaction(async (tx) => {
+    await tx.deletionRequest.update({
+      where: { id: requestId },
+      data: { status: 'approved', resolvedAt: new Date() },
+    });
+    await transitionMovie(tx, request.movieId, 'deleted', {
+      type: 'deleted',
+      detail: deleteFiles ? 'file deleted' : 'file kept on disk',
+    });
   });
 }
 
@@ -318,9 +364,11 @@ export async function keepDeletion(requestId: number): Promise<void> {
     throw new Error(`DeletionRequest id=${requestId} is already ${request.status}.`);
   }
 
-  await prisma.movie.update({ where: { id: request.movieId }, data: { pinned: true } });
-  await prisma.deletionRequest.update({
-    where: { id: requestId },
-    data: { status: 'kept', resolvedAt: new Date() },
+  await prisma.$transaction(async (tx) => {
+    await tx.deletionRequest.update({
+      where: { id: requestId },
+      data: { status: 'kept', resolvedAt: new Date() },
+    });
+    await transitionMovie(tx, request.movieId, 'kept', { type: 'kept' });
   });
 }

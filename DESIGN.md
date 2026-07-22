@@ -22,9 +22,10 @@ later, with a human in the loop so nothing is lost by accident.
 Filmstrip must never touch films it didn't add (Seerr requests, manual Radarr adds). The signal
 is captured at add time: Radarr returns *created* vs *already exists*.
 
-- `Movie.addedByFilmstrip = true` **only** when Filmstrip itself created the movie in Radarr.
-- If a film pre-existed (Seerr/manual), it's `false` and is **never** eligible for removal, even
-  while it sits on a Filmstrip list.
+- A film transitions to `Movie.state = 'added'` **only** when Filmstrip itself created the movie
+  in Radarr (§10 M7).
+- If a film pre-existed (Seerr/manual), its state is `'pre_existing'` instead, and it's **never**
+  eligible for removal, even while it sits on a Filmstrip list.
 
 This is the load-bearing invariant for everything in §5–§6.
 
@@ -32,7 +33,8 @@ This is the load-bearing invariant for everything in §5–§6.
 
 `Settings`, `User`, `List`, `SyncRun` exist today **[M1 ✅]**. `Movie` + `ListMovie` **[M2 ✅]**
 replace the per-list `SyncedMovie`; `DeletionRequest` is new **[M3 ✅]**. Jellyfin fields are
-**[M4 ✅]**. Remaining fields are marked **[planned]**.
+**[M4 ✅]**. `Movie.state` + `MovieEvent` are new **[M7 ✅]**, replacing `addedByFilmstrip`/`pinned`
+as separate columns — see §4. Remaining fields are marked **[planned]**.
 
 ```
 Settings (singleton id=1)
@@ -58,15 +60,15 @@ List
 
 Movie  (normalized; unique tmdbId)                                  [M2 ✅]
   tmdbId, imdbId?, title, year                                      [M2 ✅]
-  addedByFilmstrip  bool         -- the provenance flag (§2)        [M2 ✅]
+  state   wanted | pre_existing | added | deletion_queued |
+          deleted | kept  -- the single source of truth (§4)        [M7 ✅]
   radarrMovieId?                                                    [M2 ✅]
-  pinned            bool=false   -- "hands off forever" (§4)        [M3 ✅]
   jellyfinItemId?   -- resolved + cached by the collection sync     [M4 ✅, unverified live]
 
 ListMovie  (List <-> Movie join; replaces SyncedMovie)             [M2 ✅]
   listId, movieId                                                   [M2 ✅]
   presentOnList     bool         -- still scraped from the list?    [M2 ✅]
-  status            added | skipped | failed                        [M2 ✅]
+  status            pending | added | skipped | failed               [M2 ✅]
   excluded          bool=false   -- never add this film from this list (film-level override) [M2 ✅]
   firstSeenAt, lastSeenAt                                            [M2 ✅]
   removedFromListAt?                                                 [M3 ✅]
@@ -80,23 +82,66 @@ DeletionRequest                                                    [M3 ✅]
   status            pending | approved | kept                        [M3 ✅]
   createdAt, resolvedAt?                                              [M3 ✅]
   resolvedBy?       -- operator identity; deferred until auth (M6)  [planned]
+
+MovieEvent  (append-only per-film history log)                     [M7 ✅]
+  movieId                                                            [M7 ✅]
+  type   seen_on_list | left_list | restored_to_list |
+         radarr_add_failed | added_to_radarr | already_in_radarr |
+         deletion_queued | deletion_queue_cancelled | deleted |
+         kept | backfilled                                          [M7 ✅]
+  detail?, listId?                                                   [M7 ✅]
+  createdAt                                                          [M7 ✅]
 ```
 
 Notes:
 - **Normalizing into `Movie`** lets a film appear on many lists once, powers GUI views ("on 3
-  lists / requested by 2 people / already in library"), and is the anchor for provenance + pinning.
-- **Film-level overrides**: `ListMovie.excluded` (don't add this one from this list) and
-  `Movie.pinned` (global keep). A per-list "force keep" was considered and dropped — `pinned`
-  covers the real need. `excluded` is modeled but not yet read by the sync/reconcile code.
+  lists / requested by 2 people / already in library"), and is the anchor for provenance + state.
+- **Film-level overrides**: `ListMovie.excluded` (don't add this one from this list) is the only
+  remaining one — `excluded` is modeled but not yet read by the sync/reconcile code. The global
+  "force keep" need is now `Movie.state = 'kept'` (§4), not a separate boolean.
+- `ListMovie.status = 'pending'` is a transient value meaning "row created, Radarr attempt not yet
+  resolved" — every attempted movie gets a row (and starts at `Movie.state = 'wanted'`) *before*
+  Radarr is called, specifically so a failed attempt is visible and retried instead of vanishing.
 
-## 4. "Pinned" **[M3 ✅]**
+## 4. Film lifecycle: `Movie.state` + history **[M7 ✅]**
 
-`Movie.pinned` is pure Filmstrip bookkeeping — it changes nothing in Radarr or on disk. It means
-the keeper-rule will **never** queue the film for deletion. It is set by:
+Every write to `Movie.state` (and the paired `MovieEvent` row explaining why) goes through one
+function, `transitionMovie` (`src/movieState.ts`) — never set directly anywhere else. This
+replaced two independently-written booleans (`addedByFilmstrip`, `pinned`) that had already caused
+two rounds of the exact same bug class this session: derived state disagreeing with itself because
+nothing enforced consistency across the fields it was scattered over.
+
+```
+wanted           -- seen on an enabled list; not yet confirmed in Radarr (first scrape, or a
+                    failed add being retried next sync)
+pre_existing     -- Radarr said "already exists" -- never eligible for deletion_queued (§2)
+added            -- Filmstrip's own add succeeded; actively managed
+deletion_queued  -- left every list it was wanted on (or watched/list-deleted); DeletionRequest
+                    open for review. Only reachable from 'added'
+deleted          -- an approved DeletionRequest resolved; removed from Radarr/disk. Revived to
+                    'wanted' if the film reappears on a list -- a genuine re-add, not a duplicate,
+                    since Radarr no longer has it
+kept             -- resolved via Keep, or a permanence-on list deletion. Terminal: never
+                    transitions away on its own -- the one-way "hands off forever" guarantee
+```
+
+`kept` is pure Filmstrip bookkeeping — it changes nothing in Radarr or on disk beyond what already
+happened at the transition into it. A film reaches it by:
 - clicking **Keep** on a pending deletion (§6) — built, or
-- deleting a list whose **permanence** is on (its Filmstrip-added films get pinned so they survive)
-  — built (`deleteList` in `src/reconcile`). With permanence off, deleting a list instead runs its
-  films through the keeper-rule (reason `list_deleted`).
+- deleting a list whose **permanence** is on (its Filmstrip-managed films transition straight to
+  `kept` so they survive) — built (`deleteList` in `src/reconcile`). With permanence off, deleting
+  a list instead runs its films through the keeper-rule (reason `list_deleted`).
+
+`kept` and `deleted` are not symmetric on purpose: `kept` means "never manage this film again,
+regardless of what happens to it later" (matches the old one-way `pinned` semantics exactly), while
+`deleted` just means "not currently in Radarr" — the moment the owner re-adds it to a list, that's
+a fresh, legitimate want, so `reconcileList` revives it to `wanted` instead of leaving it stranded.
+
+`MovieEvent` also records per-list `seen_on_list`/`left_list`/`restored_to_list` events for
+**every** film regardless of state — including `pre_existing` ones, which otherwise have no
+history at all (this is what a pre-existing film leaving a list, previously invisible, now looks
+like: a real logged event instead of silence). A per-film history page reading this log is
+**[planned]**, not yet built — see §10.
 
 ## 5. The keeper-rule (single source of truth for removal) **[M3 ✅, extended M4 ✅]**
 
@@ -105,12 +150,12 @@ Reconcile runs **after each list's own sync**: `reconcileList` (left-the-list) a
 full cross-list reconcile pass independent of sync isn't built. A film becomes a **removal
 candidate** only when **all** hold:
 
-1. `Movie.addedByFilmstrip` is true, **and**
+1. `Movie.state` is `'added'` (excludes `pre_existing`, `wanted`, and anything already
+   `deletion_queued`/`deleted`/`kept` — see §4), **and**
 2. no remaining `ListMovie` still wants it — i.e. it isn't `presentOnList` on any enabled list
    (skipped for the `removeOnWatch` trigger — being watched is independently sufficient even if
    the film is still on the list; see §6), **and**
-3. `Movie.pinned` is false, **and**
-4. its Radarr movie carries **no foreign tags** (only Filmstrip/owner tags) — a guard so a film
+3. its Radarr movie carries **no foreign tags** (only Filmstrip/owner tags) — a guard so a film
    later adopted by Seerr/another tool isn't yanked away.
 
 A candidate is not deleted directly — it enters the approval queue (§6).
@@ -124,12 +169,12 @@ treated as a broken scrape rather than a real edit, and skipped for that run.
 
 For every film confirmed present this run (not only ones that just returned — a request left
 stranded by a bad scrape from before this existed needs to self-heal too), `reconcileList` also
-cancels any pending `left_list` `DeletionRequest` and re-monitors the film in Radarr: being
-confirmed on a list directly contradicts a `left_list` claim. Scoped to `left_list` only —
-`watched`/`list_deleted` claims don't become false just because the film is on a list (see §6).
-`evaluateForDeletion`'s pending-request check-then-create is wrapped in a transaction to close a
-race window (a manual "sync now" overlapping the scheduler tick could otherwise create two
-pending requests for the same film).
+cancels any pending `left_list` `DeletionRequest`, transitions the film back to `added`, and
+re-monitors it in Radarr: being confirmed on a list directly contradicts a `left_list` claim.
+Scoped to `left_list` only — `watched`/`list_deleted` claims don't become false just because the
+film is on a list (see §6). `evaluateForDeletion` re-checks `Movie.state` inside a transaction
+immediately before transitioning to `deletion_queued`, closing a race window (a manual "sync now"
+overlapping the scheduler tick could otherwise create two pending requests for the same film).
 
 ## 6. Deletion = mark → review → resolve **[M3 ✅]**
 
@@ -142,8 +187,8 @@ Default action is **delete (with file)**, but never without review.
    later).
 3. **Resolve** via `npm run cli approve <id>` / `npm run cli keep <id>`:
    - **Approve** → delete from Radarr; delete the file if the source list's `deleteFiles` is on
-     (default). Request → `approved`.
-   - **Keep** → set `Movie.pinned = true`; request → `kept`. Never resurfaces.
+     (default). Request → `approved`; `Movie.state` → `deleted`.
+   - **Keep** → request → `kept`; `Movie.state` → `kept`. Never resurfaces.
 
 `removeOnWatch` **[M4 ✅]** means **queue on watch**, not delete on watch — ideal for a
 watch-through: blast through the list, then triage what earned a permanent spot. Implemented as
@@ -204,18 +249,11 @@ The middleware (`src/server/auth.ts`) gates everything under `/api` except `/api
   quality profile/root, not just a tag.
 - RSS-based scraping where Letterboxd offers it (more robust than HTML).
 - Per-list grace-period auto-approval (§6).
-- **Film state machine + history log.** Today a film's status is inferred by reading across
-  several tables at once (`Movie.addedByFilmstrip`/`pinned`, `ListMovie.presentOnList`/`status`,
-  `DeletionRequest.status`) with no single field answering "what is this film's state right now,"
-  and no per-film chronological record of what's happened to it. Prone to exactly the class of bug
-  fixed in this session twice over (stale/contradictory derived state, e.g. a film simultaneously
-  "on the list" and "queued for deletion because it left the list"). Longer-term direction: give
-  `Movie` one real state — `wanted → added → deletion_queued → (deleted | kept) → wanted → ...` —
-  as the single source of truth, plus an append-only event log per film (added, dropped from list
-  X, queued for deletion, approved/kept, restored, etc.) surfaced on a per-film history page. Would
-  let reconcile/collections/deletion-queue logic all read one state field instead of re-deriving it
-  from table joins, and would make bugs like this immediately visible instead of requiring a
-  targeted SQLite query to notice.
+- **Per-film history page.** `Movie.state` + the append-only `MovieEvent` log (§4, **[M7 ✅]**) are
+  built and populated on every sync, but there's no GUI surfacing the log itself yet — the Movies
+  page shows a film's *current* state, not its timeline. A dedicated `/movies/:id` page (the app's
+  first param-based route) reading `GET /movies/:id/history` would show the chronological table
+  this was originally built for. **[planned]**
 
 ## 11. Status
 

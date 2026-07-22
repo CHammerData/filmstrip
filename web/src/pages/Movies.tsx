@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react';
-import { get, MovieRow, MovieState, RadarrStatus } from '../api';
+import { Link } from 'react-router-dom';
+import { get, MovieRow, RadarrStatus } from '../api';
 import { useLoad } from '../useLoad';
+import { STATE_META, STATE_FILTERS, StateBadge } from '../movieState';
 
 const STATUS_META: Record<RadarrStatus, { label: string; color: string }> = {
   downloaded: { label: 'Downloaded', color: 'var(--ok)' },
@@ -11,20 +13,6 @@ const STATUS_META: Record<RadarrStatus, { label: string; color: string }> = {
 };
 
 const STATUS_FILTERS = ['all', 'downloaded', 'wanted', 'unmonitored', 'not_in_radarr', 'unknown'] as const;
-
-// A film's lifecycle state (DESIGN.md §10) -- the single source of truth for what Filmstrip is
-// doing (or will never do) with it. pre_existing/wanted are never eligible for the deletion
-// workflow; the rest describe where it sits in that workflow.
-const STATE_META: Record<MovieState, { label: string; color: string }> = {
-  wanted: { label: 'Wanted', color: '#d1a54a' },
-  pre_existing: { label: 'Pre-existing', color: 'var(--muted)' },
-  added: { label: 'Added by Filmstrip', color: 'var(--ok)' },
-  deletion_queued: { label: 'Queued for deletion', color: 'var(--danger)' },
-  deleted: { label: 'Deleted', color: 'var(--muted)' },
-  kept: { label: 'Kept', color: 'var(--ok)' },
-};
-
-const STATE_FILTERS = ['all', 'wanted', 'pre_existing', 'added', 'deletion_queued', 'deleted', 'kept'] as const;
 
 function formatSize(bytes: number): string {
   if (!bytes) return '—';
@@ -39,19 +27,6 @@ function StatusBadge({ status }: { status: RadarrStatus }) {
     <span
       className="badge"
       style={{ background: 'transparent', border: `1px solid ${meta.color}`, color: meta.color }}
-    >
-      {meta.label}
-    </span>
-  );
-}
-
-function StateBadge({ state }: { state: MovieState }) {
-  const meta = STATE_META[state];
-  return (
-    <span
-      className="badge"
-      style={{ background: 'transparent', border: `1px solid ${meta.color}`, color: meta.color }}
-      title="This film's lifecycle state -- only added/deletion_queued/deleted/kept were ever eligible for Filmstrip's deletion workflow; pre_existing and wanted never are (DESIGN.md §2, §10)."
     >
       {meta.label}
     </span>
@@ -140,8 +115,10 @@ export default function Movies() {
               return (
                 <tr key={m.id}>
                   <td>
-                    {m.title}
-                    {m.year ? ` (${m.year})` : ''}
+                    <Link to={`/movies/${m.id}`}>
+                      {m.title}
+                      {m.year ? ` (${m.year})` : ''}
+                    </Link>
                     <div className="muted" style={{ fontSize: 12 }}>
                       tmdb {m.tmdbId}
                     </div>

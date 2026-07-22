@@ -140,8 +140,9 @@ a fresh, legitimate want, so `reconcileList` revives it to `wanted` instead of l
 `MovieEvent` also records per-list `seen_on_list`/`left_list`/`restored_to_list` events for
 **every** film regardless of state — including `pre_existing` ones, which otherwise have no
 history at all (this is what a pre-existing film leaving a list, previously invisible, now looks
-like: a real logged event instead of silence). A per-film history page reading this log is
-**[planned]**, not yet built — see §10.
+like: a real logged event instead of silence). A per-film history page (`GET /movies/:id/history`;
+`/movies/:id` in the GUI, the app's first param-based route, reached by clicking a film on the
+Movies page) shows this log as a chronological table.
 
 ## 5. The keeper-rule (single source of truth for removal) **[M3 ✅, extended M4 ✅]**
 
@@ -249,11 +250,6 @@ The middleware (`src/server/auth.ts`) gates everything under `/api` except `/api
   quality profile/root, not just a tag.
 - RSS-based scraping where Letterboxd offers it (more robust than HTML).
 - Per-list grace-period auto-approval (§6).
-- **Per-film history page.** `Movie.state` + the append-only `MovieEvent` log (§4, **[M7 ✅]**) are
-  built and populated on every sync, but there's no GUI surfacing the log itself yet — the Movies
-  page shows a film's *current* state, not its timeline. A dedicated `/movies/:id` page (the app's
-  first param-based route) reading `GET /movies/:id/history` would show the chronological table
-  this was originally built for. **[planned]**
 
 ## 11. Status
 

@@ -121,16 +121,22 @@ Module layout:
   serves `web/dist` when that build exists, with an Express-5 `/*splat` catch-all for SPA
   deep-links); `http.ts` holds `HttpError`/`asyncHandler`/`parseId`/`parseBody` + central error
   middleware; `auth.ts` has `requireAuth`/`requireAdmin` (read the session cookie); `routes/*` are
-  one router per resource (`auth`, `settings`, `users`, `lists`, `deletions`, `syncRuns`, `sync`).
-  Routers are thin — validate with zod, then call prisma or the existing scheduler/reconcile/auth
-  functions. Everything under `/api` needs a session except `/api/health` and `POST /api/auth/login`;
-  settings/users/deletions/global-sync are admin-only. Prisma P2002/P2025 → 409/404.
+  one router per resource (`auth`, `settings`, `users`, `lists`, `movies`, `deletions`, `syncRuns`,
+  `sync`). `movies.ts` also serves `GET /:id/history` — a film's full `MovieEvent` log, oldest
+  first, 404 if the id doesn't exist (DESIGN.md §4). Routers are thin — validate with zod, then
+  call prisma or the existing scheduler/reconcile/auth functions. Everything under `/api` needs a
+  session except `/api/health` and `POST /api/auth/login`; settings/users/deletions/global-sync are
+  admin-only. Prisma P2002/P2025 → 409/404.
 - **`src/auth/`** — GUI auth logic (M6): `login()` (Jellyfin `authenticateByName` → find-or-provision
   a linked `User` → create a `Session`), `validateSession()`, `logout()`. Sessions are DB-backed
   (`Session` model), opaque token in an httpOnly cookie, 30-day expiry.
 - **`web/`** — the React + Vite SPA (M6). `src/api.ts` (fetch wrapper, `credentials: 'include'`),
-  `src/auth.tsx` (auth context calling `/api/auth/*`), `src/pages/*` (Login, Lists, Users,
-  Deletions, SyncHistory, Settings). Admin-only pages are hidden from non-admins in `App.tsx`.
+  `src/auth.tsx` (auth context calling `/api/auth/*`), `src/movieState.tsx` (shared `STATE_META`/
+  `StateBadge`, so Movies and MovieHistory always agree on state labels/colors), `src/pages/*`
+  (Login, Lists, Movies, MovieHistory, Users, Deletions, SyncHistory, Settings). `/movies/:id`
+  (MovieHistory) is the app's first param-based route, reached via a `Link` from a film's title on
+  the Movies page — the first in-content navigation in the app (everywhere else only the topbar
+  `NavLink`s move between pages). Admin-only pages are hidden from non-admins in `App.tsx`.
 - **`src/index.ts`** — boots `startScheduler()` **and** the Express API (`createApp().listen(PORT)`).
   **`src/cli.ts`** / **`src/db/seed.ts`** — operator entry points.
 

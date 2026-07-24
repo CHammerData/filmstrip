@@ -58,6 +58,21 @@ export async function getOwnerWatchedTmdbIds(user: User, settings: Settings): Pr
 }
 
 /**
+ * This user's diary-logged watch dates (DESIGN.md §7) -- only letterboxd_diary rows carry a real
+ * date; aggregate/jellyfin rows are presence-only and never trigger removeOnWatch (a
+ * watched-but-undiaried film can't be told "just watched" from "watched years ago"). Reads the
+ * WatchedFilm cache (refreshed independently on Settings.watchedRefreshIntervalMin), not a live
+ * scrape.
+ */
+export async function getDiaryWatchedDates(userId: number): Promise<Map<number, Date>> {
+  const rows = await prisma.watchedFilm.findMany({
+    where: { userId, source: 'letterboxd_diary', watchedAt: { not: null } },
+    select: { tmdbId: true, watchedAt: true },
+  });
+  return new Map(rows.map((r) => [r.tmdbId, r.watchedAt!]));
+}
+
+/**
  * Refresh one user's cached watched-state (DESIGN.md §7): diary (dated) + aggregate watched-films
  * (presence only) + Jellyfin playback (presence only), upserted into WatchedFilm. A diary date
  * always wins over a presence-only record for the same film -- it's the only reliable "when," and

@@ -4,8 +4,9 @@ import { Prisma } from '@prisma/client';
 import prisma from '../../db/client';
 import { detectListType } from '../../scraper';
 import { syncListById } from '../../scheduler';
-import { deleteList } from '../../reconcile';
+import { deleteList, handleListDisabled } from '../../reconcile';
 import { asyncHandler, parseBody, parseId, notFound, conflict, badRequest, HttpError } from '../http';
+import logger from '../../util/logger';
 
 // Ownership scoping: admins manage any list; everyone else only the lists they own. Reads
 // (GET) stay open; this guards the write/sync paths. Assumes requireAuth populated req.session.
@@ -30,7 +31,6 @@ const overrideSchema = z.object({
   takeAmount: z.number().int().positive().nullable(),
   takeStrategy: z.enum(['oldest', 'newest']).nullable(),
   checkIntervalMin: z.number().int().positive().nullable(),
-  deleteFiles: z.boolean(),
   permanence: z.boolean(),
   unwatchedOnly: z.boolean(),
   removeOnWatch: z.boolean(),
@@ -44,6 +44,23 @@ const createSchema = overrideSchema
   .strict();
 
 const updateSchema = overrideSchema.partial().extend({ url: z.string().url().optional() }).strict();
+
+// permanence is a live "keep everything this list claims, forever" guarantee (DESIGN.md §4-§6) --
+// it can't coexist with a toggle that's about conditionally dropping films (unwatchedOnly/
+// removeOnWatch). Checked against the *effective* values (patch merged over the existing row, or
+// the schema defaults on create), since a partial update only sees the fields it's changing.
+function assertPermanenceCompatible(effective: {
+  permanence: boolean;
+  unwatchedOnly: boolean;
+  removeOnWatch: boolean;
+}): void {
+  if (effective.permanence && (effective.unwatchedOnly || effective.removeOnWatch)) {
+    throw new HttpError(
+      400,
+      'A list cannot have permanence enabled together with unwatchedOnly or removeOnWatch.'
+    );
+  }
+}
 
 export function listsRouter(): Router {
   const router = Router();
@@ -71,6 +88,11 @@ export function listsRouter(): Router {
       const { userId, url, label, ...overrides } = parseBody(createSchema, req.body);
       // You can only create lists you own (admins may create for anyone).
       assertCanManage(req, userId);
+      assertPermanenceCompatible({
+        permanence: overrides.permanence ?? false,
+        unwatchedOnly: overrides.unwatchedOnly ?? false,
+        removeOnWatch: overrides.removeOnWatch ?? false,
+      });
 
       const listType = detectListType(url);
       if (!listType) throw badRequest(`"${url}" is not a supported Letterboxd list URL.`);
@@ -100,11 +122,16 @@ export function listsRouter(): Router {
     '/:id',
     asyncHandler(async (req, res) => {
       const id = parseId(req.params.id);
-      const existing = await prisma.list.findUnique({ where: { id } });
+      const existing = await prisma.list.findUnique({ where: { id }, include: { user: true } });
       if (!existing) throw notFound(`List id=${id} not found.`);
       assertCanManage(req, existing.userId);
 
       const { url, ...rest } = parseBody(updateSchema, req.body);
+      assertPermanenceCompatible({
+        permanence: rest.permanence ?? existing.permanence,
+        unwatchedOnly: rest.unwatchedOnly ?? existing.unwatchedOnly,
+        removeOnWatch: rest.removeOnWatch ?? existing.removeOnWatch,
+      });
 
       // Changing the URL re-detects the list type, so they never drift apart.
       const data: Prisma.ListUpdateInput = { ...rest };
@@ -115,14 +142,27 @@ export function listsRouter(): Router {
         data.listType = listType;
       }
 
+      let list;
       try {
-        const list = await prisma.list.update({ where: { id }, data });
-        res.json(list);
+        list = await prisma.list.update({ where: { id }, data });
       } catch (e) {
         if (isNotFound(e)) throw notFound(`List id=${id} not found.`);
         if (isUniqueViolation(e)) throw conflict(`That user already has a list for "${url}".`);
         throw e;
       }
+
+      // A list being disabled drops every claim it was holding -- nothing else reacts to `enabled`
+      // flipping false, since a disabled list is simply never synced again (DESIGN.md §5). The
+      // disable itself already succeeded above; reconciliation here is best-effort.
+      if (existing.enabled && list.enabled === false) {
+        try {
+          await handleListDisabled({ ...list, user: existing.user });
+        } catch (e: any) {
+          logger.error(`Failed to reconcile claims for disabled list id=${id}: ${e?.message ?? e}`);
+        }
+      }
+
+      res.json(list);
     })
   );
 

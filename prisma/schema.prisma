@@ -112,15 +112,18 @@ model List {
   takeAmount          Int?
   takeStrategy        String? // oldest | newest
   checkIntervalMin    Int?
-  /// On an approved deletion triggered by this list, also delete the file (not just unmonitor).
-  deleteFiles         Boolean @default(true)
-  /// When this list is deleted, keep its films: pin them (so the keeper-rule never removes them)
-  /// instead of queueing them for deletion review. See DESIGN.md §4/§6.
+  /// Live, continuous guarantee (DESIGN.md §4-§6): any film this (enabled) list currently claims
+  /// is pinned to `kept` immediately, not just when the list is later deleted. Mutually exclusive
+  /// with unwatchedOnly/removeOnWatch (enforced in src/server/routes/lists.ts) -- a list that's
+  /// meant to keep everything it claims forever can't also be conditioned on watch-state.
   permanence          Boolean @default(false)
   /// Subtract the owner's watched set (Letterboxd ∪ Jellyfin) at scrape time -- skip re-adding them.
+  /// Mutually exclusive with permanence.
   unwatchedOnly       Boolean @default(false)
-  /// When the owner watches a film still on this list, queue it for deletion review (doesn't
-  /// require the film to have left the list -- see DESIGN.md §6).
+  /// When the owner's Letterboxd diary shows a real watch date after this list started tracking
+  /// the film, and no other enabled non-removeOnWatch list still claims it, queue it for deletion
+  /// review (doesn't require the film to have left the list -- see DESIGN.md §6-§7). Mutually
+  /// exclusive with permanence.
   removeOnWatch       Boolean @default(false)
   /// Maintain a Jellyfin collection (BoxSet) mirroring this list's current films.
   makeCollection         Boolean @default(false)
@@ -194,8 +197,9 @@ model MovieEvent {
   movie   Movie @relation(fields: [movieId], references: [id], onDelete: Cascade)
   movieId Int
 
-  /// seen_on_list | left_list | restored_to_list | radarr_add_failed | added_to_radarr |
-  /// already_in_radarr | deletion_queued | deletion_queue_cancelled | deleted | kept | backfilled
+  /// seen_on_list | left_list | list_deleted | list_deactivated | watch_dropped |
+  /// restored_to_list | radarr_add_failed | added_to_radarr | already_in_radarr |
+  /// deletion_queued | deletion_queue_cancelled | deleted | kept | revived | backfilled
   type   String
   detail String?
 
@@ -264,7 +268,8 @@ model DeletionRequest {
   movie   Movie @relation(fields: [movieId], references: [id], onDelete: Cascade)
   movieId Int
 
-  /// left_list | watched | list_deleted
+  /// left_list | watched | list_deleted | list_deactivated | manual_reopen (a human released a
+  /// `kept` film back into the pipeline via dropKeepStatus, src/reconcile/index.ts)
   reason String
 
   /// The list whose sync caused this film to drop out of contention (informational; the

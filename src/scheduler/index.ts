@@ -2,8 +2,8 @@ import prisma from '../db/client';
 import { resolveListConfig, ListWithUser } from '../db/config';
 import { fetchMoviesFromUrl, LetterboxdMovie } from '../scraper';
 import { createRadarrClient, upsertMovies } from '../api/radarr';
-import { reconcileList, reconcileWatched } from '../reconcile';
-import { getOwnerWatchedTmdbIds } from '../watched';
+import { reconcileList, reconcileWatched, applyPermanenceClaims } from '../reconcile';
+import { getOwnerWatchedTmdbIds, getDiaryWatchedDates } from '../watched';
 import { syncCollection } from '../collections';
 import { transitionMovie, logMovieEvent } from '../movieState';
 import logger from '../util/logger';
@@ -41,15 +41,25 @@ export async function syncList(list: ListWithUser): Promise<SyncResult> {
 
     const scraped = await fetchMoviesFromUrl(config.url, config.take, config.strategy);
 
-    // Watched-state (DESIGN.md §7) is only fetched if a toggle actually needs it — it costs a
-    // full Letterboxd/Jellyfin watched-history read. A failure here degrades to "nothing
-    // watched" rather than failing the sync; it's supplementary to the core Radarr push.
+    // Watched-state (DESIGN.md §7) is only fetched if a toggle actually needs it. unwatchedOnly
+    // still reads the live-scrape/Jellyfin union (presence only, no dates); removeOnWatch reads
+    // the diary-date cache instead (it needs a real date to tell "just watched" from "watched
+    // years ago" — DESIGN.md §7). A failure here degrades to "nothing watched" rather than
+    // failing the sync; it's supplementary to the core Radarr push.
     let watchedTmdbIds = new Set<number>();
-    if (config.unwatchedOnly || config.removeOnWatch) {
+    if (config.unwatchedOnly) {
       try {
         watchedTmdbIds = await getOwnerWatchedTmdbIds(list.user, settings);
       } catch (e: any) {
         logger.error(`Failed to resolve watched state for list id=${list.id}: ${e?.message ?? e}`);
+      }
+    }
+    let diaryWatchedDates = new Map<number, Date>();
+    if (config.removeOnWatch) {
+      try {
+        diaryWatchedDates = await getDiaryWatchedDates(list.user.id);
+      } catch (e: any) {
+        logger.error(`Failed to resolve diary watch dates for list id=${list.id}: ${e?.message ?? e}`);
       }
     }
 
@@ -166,12 +176,24 @@ export async function syncList(list: ListWithUser): Promise<SyncResult> {
         logger.error(`Reconcile failed for list id=${list.id}: ${e?.message ?? e}`);
       }
 
-      // removeOnWatch: queue review for anything still on this list the owner has now watched.
-      if (config.removeOnWatch && watchedTmdbIds.size > 0) {
+      // removeOnWatch: queue review for anything still on this list the owner has now watched
+      // (diary-date-driven — see reconcileWatched).
+      if (config.removeOnWatch) {
         try {
-          await reconcileWatched(list, watchedTmdbIds);
+          await reconcileWatched(list, diaryWatchedDates);
         } catch (e: any) {
           logger.error(`Reconcile (watched) failed for list id=${list.id}: ${e?.message ?? e}`);
+        }
+      }
+
+      // permanence: a live, continuous guarantee (DESIGN.md §4/§6) -- pin anything this list
+      // currently claims that's added/deletion_queued, every sync, not just at list-deletion time.
+      // Runs after reconcileList/reconcileWatched so it sees this tick's fully-settled claims.
+      if (list.permanence) {
+        try {
+          await applyPermanenceClaims(list);
+        } catch (e: any) {
+          logger.error(`Permanence pinning failed for list id=${list.id}: ${e?.message ?? e}`);
         }
       }
 

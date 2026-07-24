@@ -1,7 +1,7 @@
 import { Settings, User } from '@prisma/client';
 
 const mockPrisma: any = {
-  watchedFilm: { upsert: jest.fn() },
+  watchedFilm: { upsert: jest.fn(), findMany: jest.fn() },
   user: { update: jest.fn(), findMany: jest.fn() },
   settings: { findUnique: jest.fn() },
 };
@@ -24,7 +24,7 @@ jest.mock('../util/logger', () => ({
   error: jest.fn(),
 }));
 
-import { getOwnerWatchedTmdbIds, refreshWatchedState, refreshDueUsers } from './index';
+import { getOwnerWatchedTmdbIds, refreshWatchedState, refreshDueUsers, getDiaryWatchedDates } from './index';
 import { fetchMoviesFromUrl } from '../scraper';
 import { DiaryScraper } from '../scraper/diary';
 import { getWatchedTmdbIds } from '../api/jellyfin';
@@ -136,6 +136,34 @@ describe('getOwnerWatchedTmdbIds', () => {
     );
 
     expect(result).toEqual(new Set([100, 200]));
+  });
+});
+
+describe('getDiaryWatchedDates', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('returns a map of tmdbId to watchedAt for letterboxd_diary rows', async () => {
+    mockPrisma.watchedFilm.findMany.mockResolvedValue([
+      { tmdbId: 100, watchedAt: new Date('2026-07-15T00:00:00Z') },
+    ]);
+
+    const result = await getDiaryWatchedDates(1);
+
+    expect(mockPrisma.watchedFilm.findMany).toHaveBeenCalledWith({
+      where: { userId: 1, source: 'letterboxd_diary', watchedAt: { not: null } },
+      select: { tmdbId: true, watchedAt: true },
+    });
+    expect(result).toEqual(new Map([[100, new Date('2026-07-15T00:00:00Z')]]));
+  });
+
+  it('returns an empty map when there are no diary rows', async () => {
+    mockPrisma.watchedFilm.findMany.mockResolvedValue([]);
+
+    const result = await getDiaryWatchedDates(1);
+
+    expect(result.size).toBe(0);
   });
 });
 

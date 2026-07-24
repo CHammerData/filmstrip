@@ -1,8 +1,9 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { get, MovieRow, RadarrStatus } from '../api';
+import { get, post, ApiError, MovieRow, RadarrStatus } from '../api';
 import { useLoad } from '../useLoad';
 import { STATE_META, STATE_FILTERS, StateBadge } from '../movieState';
+import { useAuth } from '../auth';
 
 const STATUS_META: Record<RadarrStatus, { label: string; color: string }> = {
   downloaded: { label: 'Downloaded', color: 'var(--ok)' },
@@ -38,6 +39,23 @@ export default function Movies() {
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState<(typeof STATUS_FILTERS)[number]>('all');
   const [state, setState] = useState<(typeof STATE_FILTERS)[number]>('all');
+  const { me } = useAuth();
+  const isAdmin = Boolean(me?.isAdmin);
+  const [busyId, setBusyId] = useState<number | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  async function dropKeep(id: number) {
+    setActionError(null);
+    setBusyId(id);
+    try {
+      await post(`/movies/${id}/drop-keep`);
+      await movies.reload();
+    } catch (e) {
+      setActionError(e instanceof ApiError ? e.message : 'Action failed.');
+    } finally {
+      setBusyId(null);
+    }
+  }
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -95,6 +113,7 @@ export default function Movies() {
 
       {movies.loading && <p className="muted">Loading…</p>}
       {movies.error && <div className="error">{movies.error}</div>}
+      {actionError && <div className="error">{actionError}</div>}
       {movies.data && filtered.length === 0 && <p className="muted">No matching films.</p>}
 
       {filtered.length > 0 && (
@@ -103,15 +122,18 @@ export default function Movies() {
             <tr>
               <th>Film</th>
               <th>Added by lists</th>
+              <th>Claimed by</th>
               <th>Owner(s)</th>
               <th>Radarr status</th>
               <th>State</th>
               <th>On disk</th>
+              {isAdmin && <th></th>}
             </tr>
           </thead>
           <tbody>
             {filtered.map((m) => {
               const owners = [...new Set(m.sources.map((s) => s.ownerName))];
+              const canDropKeep = m.state === 'kept' && m.claims.length === 0;
               return (
                 <tr key={m.id}>
                   <td>
@@ -141,6 +163,19 @@ export default function Movies() {
                       </span>
                     )}
                   </td>
+                  <td>
+                    {m.claims.length === 0 ? (
+                      <span className="muted">none</span>
+                    ) : (
+                      <span style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                        {m.claims.map((c) => (
+                          <span key={c.listId} className="badge" style={{ fontSize: 11 }}>
+                            {c.listLabel}
+                          </span>
+                        ))}
+                      </span>
+                    )}
+                  </td>
                   <td className="muted">{owners.length ? owners.join(', ') : '—'}</td>
                   <td>
                     <StatusBadge status={m.radarrStatus} />
@@ -149,6 +184,15 @@ export default function Movies() {
                     <StateBadge state={m.state} />
                   </td>
                   <td className="muted">{m.radarr ? formatSize(m.radarr.sizeOnDisk) : '—'}</td>
+                  {isAdmin && (
+                    <td className="actions">
+                      {canDropKeep && (
+                        <button disabled={busyId === m.id} onClick={() => dropKeep(m.id)}>
+                          Drop keep status
+                        </button>
+                      )}
+                    </td>
+                  )}
                 </tr>
               );
             })}

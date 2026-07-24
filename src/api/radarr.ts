@@ -130,8 +130,8 @@ export async function getRootFolder(client: AxiosInstance): Promise<string | nul
             logger.error('No root folders found in Radarr');
             return null;
         }
-    } catch (error) {
-        logger.error('Error getting root folders:', error);
+    } catch (error: any) {
+        logger.error(`Error getting root folders: ${error?.message ?? error}`);
         return null;
     }
 }
@@ -158,8 +158,8 @@ export async function getMovieById(client: AxiosInstance, id: number): Promise<R
     try {
         const response = await client.get(`/api/v3/movie/${id}`);
         return response.data;
-    } catch (error) {
-        logger.error(`Error getting Radarr movie id=${id}:`, error);
+    } catch (error: any) {
+        logger.error(`Error getting Radarr movie id=${id}: ${error?.message ?? error}`);
         return null;
     }
 }
@@ -218,8 +218,8 @@ export async function getOrCreateTag(client: AxiosInstance, tagName: string): Pr
 
         logger.info(`Created tag: ${tagName} (ID: ${createResponse.data.id})`);
         return createResponse.data.id;
-    } catch (error) {
-        logger.error(`Error getting or creating tag ${tagName}:`, error);
+    } catch (error: any) {
+        logger.error(`Error getting or creating tag ${tagName}: ${error?.message ?? error}`);
         return null;
     }
 }
@@ -315,20 +315,20 @@ export async function addMovie(
         }
 
         if (params.dryRun) {
-            logger.info(`[DRY RUN] Would add movie to Radarr: ${payload.title} (TMDB: ${payload.tmdbId})`, payload);
+            logger.info(`[DRY RUN] Would add movie to Radarr: ${payload.title} (TMDB: ${payload.tmdbId}) ${JSON.stringify(payload)}`);
             return { movie, status: 'dryRun' };
         }
 
         const response = await client.post('/api/v3/movie', payload);
 
-        logger.info(`Successfully added movie: ${payload.title}`, response.data);
+        logger.info(`Successfully added movie: ${payload.title} ${JSON.stringify(response.data)}`);
         return { movie, status: 'added', radarrMovieId: response.data?.id };
     } catch (e: any) {
         if (e.response?.status === 400 && (JSON.stringify(e.response?.data)).includes('This movie has already been added')) {
             logger.debug(`Movie ${movie.name} already exists in Radarr, skipping`);
             return { movie, status: 'skipped', reason: 'already in Radarr' };
         }
-        logger.error(`Error adding movie ${movie.name} (TMDB: ${movie.tmdbId}):`, e);
+        logger.error(`Error adding movie ${movie.name} (TMDB: ${movie.tmdbId}): ${e?.message ?? e}`);
         return { movie, status: 'failed', reason: e?.message ?? 'unknown error' };
     }
 }

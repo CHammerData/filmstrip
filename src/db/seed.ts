@@ -87,7 +87,7 @@ if (require.main === module) {
   seedFromEnv()
     .then(() => prisma.$disconnect())
     .catch(async (e) => {
-      logger.error('Seed failed:', e);
+      logger.error(`Seed failed: ${e?.message ?? e}`);
       await prisma.$disconnect();
       process.exit(1);
     });

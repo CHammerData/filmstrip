@@ -36,7 +36,7 @@ function healthHandler(mode: RunMode) {
       await prisma.$queryRaw`SELECT 1`;
       res.json({ status: 'ok', ...info });
     } catch (e) {
-      logger.error('Health DB probe failed:', e instanceof Error ? e.message : e);
+      logger.error(`Health DB probe failed: ${e instanceof Error ? e.message : e}`);
       res.status(503).json({ status: 'degraded', ...info });
     }
   };
@@ -142,6 +142,6 @@ function errorHandler(err: unknown, _req: Request, res: Response, _next: NextFun
     res.status(400).json({ error: 'Invalid query parameter.' });
     return;
   }
-  logger.error('Unhandled API error:', err instanceof Error ? err.message : err);
+  logger.error(`Unhandled API error: ${err instanceof Error ? err.message : err}`);
   res.status(500).json({ error: 'Internal server error.' });
 }

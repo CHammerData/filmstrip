@@ -44,7 +44,7 @@ export function jellyfinRouter(): Router {
           users: jfUsers.map((u) => ({ ...u, linked: linkedIds.has(u.id) })),
         });
       } catch (e) {
-        logger.error('Failed to load Jellyfin users:', e instanceof Error ? e.message : e);
+        logger.error(`Failed to load Jellyfin users: ${e instanceof Error ? e.message : e}`);
         res.json({ configured: true, reachable: false, users: [] });
       }
     })

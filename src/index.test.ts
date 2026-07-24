@@ -1,5 +1,6 @@
 import { main } from './index';
 import * as scheduler from './scheduler';
+import * as watched from './watched';
 import { createApp, createHeadlessApp } from './server/app';
 import { seedFromEnv } from './db/seed';
 
@@ -10,6 +11,7 @@ jest.mock('./util/logger', () => ({
   error: jest.fn(),
 }));
 jest.mock('./scheduler');
+jest.mock('./watched', () => ({ __esModule: true, startWatchedStateScheduler: jest.fn() }));
 // Mock the apps so main() never binds a real port during the test.
 jest.mock('./server/app', () => ({
   __esModule: true,
@@ -25,6 +27,7 @@ describe('main application', () => {
     jest.clearAllMocks();
     delete process.env.FILMSTRIP_MODE;
     (scheduler.startScheduler as jest.Mock).mockReturnValue({} as any);
+    (watched.startWatchedStateScheduler as jest.Mock).mockReturnValue({} as any);
     (createApp as jest.Mock).mockReturnValue({ listen });
     (createHeadlessApp as jest.Mock).mockReturnValue({ listen });
     (seedFromEnv as jest.Mock).mockResolvedValue(undefined);
@@ -34,6 +37,7 @@ describe('main application', () => {
     await main();
 
     expect(scheduler.startScheduler).toHaveBeenCalledTimes(1);
+    expect(watched.startWatchedStateScheduler).toHaveBeenCalledTimes(1);
     expect(createApp).toHaveBeenCalledTimes(1);
     expect(createHeadlessApp).not.toHaveBeenCalled();
     expect(seedFromEnv).not.toHaveBeenCalled();
@@ -47,6 +51,7 @@ describe('main application', () => {
 
     expect(seedFromEnv).toHaveBeenCalledTimes(1);
     expect(scheduler.startScheduler).toHaveBeenCalledTimes(1);
+    expect(watched.startWatchedStateScheduler).toHaveBeenCalledTimes(1);
     expect(createHeadlessApp).toHaveBeenCalledTimes(1);
     expect(createApp).not.toHaveBeenCalled();
     expect(listen).toHaveBeenCalledTimes(1);

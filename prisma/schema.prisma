@@ -30,6 +30,11 @@ model Settings {
   defaultCheckIntervalMin    Int     @default(60)
   dryRun                     Boolean @default(false)
 
+  /// How often (minutes) each user's watched-state (diary + aggregate watched-films + Jellyfin)
+  /// is refreshed. Global and decoupled from any list's own sync interval -- refreshed once per
+  /// user regardless of how many lists they own, not once per list per sync.
+  watchedRefreshIntervalMin Int @default(1440) // 24h
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -44,13 +49,19 @@ model User {
   tag     String
   enabled Boolean @default(true)
 
-  /// Letterboxd username (no @) -- scraped at /{username}/films/ for this user's watched set.
+  /// Letterboxd username (no @) -- scraped at /{username}/diary/ + /{username}/films/ for this
+  /// user's watched set.
   letterboxdUsername String?
   /// Jellyfin user id -- this user's playback history for the watched set + GUI auth link.
   jellyfinUserId     String? @unique
 
-  lists    List[]
-  sessions Session[]
+  /// Last time this user's WatchedFilm rows were refreshed. Drives the decoupled watched-state
+  /// scheduler (Settings.watchedRefreshIntervalMin) -- independent of any list's own sync.
+  lastWatchedRefreshAt DateTime?
+
+  lists        List[]
+  sessions     Session[]
+  watchedFilms WatchedFilm[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -221,6 +232,29 @@ model ListMovie {
   @@unique([listId, movieId])
   @@index([listId])
   @@index([movieId])
+}
+
+/// One user's watched-state cache for one film (DESIGN.md §7). Refreshed independently of any
+/// list's own sync, on a global interval (Settings.watchedRefreshIntervalMin), once per user.
+/// unwatchedOnly only needs presence (has this user watched it at all, ever). removeOnWatch needs
+/// an actual date -- diary-sourced only; a watched-but-undiaried film can never trigger it, since
+/// there's no reliable way to tell "just watched" from "watched years ago, only just noticed."
+model WatchedFilm {
+  id     Int  @id @default(autoincrement())
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId Int
+  tmdbId Int
+
+  /// The real diary-logged date, when Letterboxd has one. Null if the film is marked watched but
+  /// was never diary-logged (Letterboxd allows a bare watched-checkbox with no diary entry).
+  watchedAt DateTime?
+  /// letterboxd_diary | letterboxd_aggregate | jellyfin
+  source    String
+
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, tmdbId])
+  @@index([userId])
 }
 
 /// The deletion approval queue (the keeper-rule's output, DESIGN.md §5-§6). A candidate is never

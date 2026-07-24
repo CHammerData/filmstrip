@@ -51,6 +51,7 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
     defaultMinimumAvailability: 'released',
     defaultCheckIntervalMin: 60,
     dryRun: false,
+    watchedRefreshIntervalMin: 1440,
     createdAt: now,
     updatedAt: now,
     ...overrides,
@@ -65,6 +66,7 @@ function makeList(overrides: Partial<List> = {}): ListWithUser {
     enabled: true,
     letterboxdUsername: null,
     jellyfinUserId: null,
+    lastWatchedRefreshAt: null,
     createdAt: now,
     updatedAt: now,
   };

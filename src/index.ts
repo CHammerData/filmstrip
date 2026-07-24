@@ -3,6 +3,7 @@ require('dotenv').config();
 import logger from './util/logger';
 import { VERSION } from './util/version';
 import { startScheduler } from './scheduler';
+import { startWatchedStateScheduler } from './watched';
 import { createApp, createHeadlessApp, RunMode } from './server/app';
 import { seedFromEnv } from './db/seed';
 
@@ -30,6 +31,7 @@ export async function main(): Promise<void> {
   }
 
   startScheduler();
+  startWatchedStateScheduler();
 
   const app = mode === 'headless' ? createHeadlessApp() : createApp();
   app.listen(PORT, () => {

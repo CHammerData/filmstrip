@@ -30,9 +30,13 @@ RUN npm run build   # tsc -> /app/dist
 
 # --- Stage 3: runtime ---
 FROM node:20-slim AS runtime
-# openssl is required by Prisma's query engine at runtime.
+# openssl is required by Prisma's query engine at runtime. curl is a fallback HTTP client for the
+# Letterboxd scraper (src/scraper/http.ts): Cloudflare's bot-mitigation blocks Node's own HTTP
+# stack (fetch and the core https module both 403) on some multi-page scrape URLs where curl,
+# confirmed directly against the identical request, reliably succeeds -- a TLS/HTTP client
+# fingerprint false-positive, not a real permission denial.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends openssl \
+    && apt-get install -y --no-install-recommends openssl curl \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 

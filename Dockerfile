@@ -30,9 +30,17 @@ RUN npm run build   # tsc -> /app/dist
 
 # --- Stage 3: runtime ---
 FROM node:20-slim AS runtime
-# openssl is required by Prisma's query engine at runtime.
+# openssl is required by Prisma's query engine at runtime. curl is a fallback HTTP client for the
+# Letterboxd scraper (src/scraper/http.ts): Cloudflare's bot-mitigation blocks Node's own HTTP
+# stack (fetch and the core https module both 403) on some multi-page scrape URLs where curl,
+# confirmed directly against the identical request, reliably succeeds -- a TLS/HTTP client
+# fingerprint false-positive, not a real permission denial. ca-certificates is required for curl
+# specifically -- node:20-slim doesn't ship it, and unlike curl, Node's own fetch/https work fine
+# without it because Node bundles its own trusted root CAs internally. Confirmed by testing inside
+# an actual built image: curl fails TLS setup entirely ("error setting certificate file") without
+# this package, even though openssl alone is already present.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends openssl \
+    && apt-get install -y --no-install-recommends openssl curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 

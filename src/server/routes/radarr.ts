@@ -37,7 +37,7 @@ export function radarrRouter(): Router {
         ]);
         res.json({ configured: true, qualityProfiles, rootFolders, tags });
       } catch (e) {
-        logger.error('Failed to load Radarr options:', e instanceof Error ? e.message : e);
+        logger.error(`Failed to load Radarr options: ${e instanceof Error ? e.message : e}`);
         res.json(empty);
       }
     })

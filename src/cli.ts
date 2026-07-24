@@ -99,7 +99,7 @@ async function main() {
 main()
   .then(() => prisma.$disconnect())
   .catch(async (e) => {
-    logger.error('CLI failed:', e?.message ?? e);
+    logger.error(`CLI failed: ${e?.message ?? e}`);
     await prisma.$disconnect();
     process.exit(1);
   });

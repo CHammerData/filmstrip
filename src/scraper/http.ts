@@ -19,17 +19,30 @@ const BASE_DELAY_MS = 500;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * `fetch()` with a browser User-Agent and retry-on-network-error. A single transient connection
- * reset/timeout (undici throws "fetch failed") among many concurrent scrape requests would
- * otherwise abort an entire sync; retrying with linear backoff makes the scrape resilient. Only
- * thrown (network-level) failures are retried — HTTP status handling stays with the caller, so a
- * real 404/403 still surfaces immediately with the caller's own message.
+ * `fetch()` with a browser User-Agent and retry-on-network-error, plus retry-on-403. A single
+ * transient connection reset/timeout (undici throws "fetch failed") among many concurrent scrape
+ * requests would otherwise abort an entire sync; retrying with linear backoff makes the scrape
+ * resilient. 403 is also retried: confirmed (by comparing against curl on the identical URL and
+ * headers) that undici's fetch alone gets 403 from Letterboxd/Cloudflare's bot-mitigation while a
+ * real browser/curl gets 200 -- a TLS/HTTP client fingerprint false-positive, not a genuine
+ * permission denial, and empirically often clears on an immediate retry. A multi-page scrape (e.g.
+ * a large watched-films diary) only needs one page to hit this for the whole scrape to fail and
+ * silently degrade to "nothing watched" -- see DESIGN.md §7. Every other status (404, etc.) still
+ * surfaces immediately with the caller's own message.
  */
 export async function fetchWithRetry(url: string): Promise<Response> {
   let lastErr: unknown;
+  let lastResponse: Response | undefined;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      return await fetch(url, { headers: SCRAPER_HEADERS });
+      const response = await fetch(url, { headers: SCRAPER_HEADERS });
+      if (response.status !== 403) return response;
+      lastResponse = response;
+      if (attempt < MAX_ATTEMPTS) {
+        const delay = BASE_DELAY_MS * attempt;
+        logger.debug(`Fetch ${url} got 403 (attempt ${attempt}/${MAX_ATTEMPTS}); retrying in ${delay}ms.`);
+        await sleep(delay);
+      }
     } catch (e) {
       lastErr = e;
       if (attempt < MAX_ATTEMPTS) {
@@ -42,5 +55,6 @@ export async function fetchWithRetry(url: string): Promise<Response> {
       }
     }
   }
+  if (lastResponse) return lastResponse; // exhausted retries on 403s -- let the caller's status check surface it
   throw lastErr;
 }

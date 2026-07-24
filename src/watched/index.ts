@@ -16,7 +16,7 @@ async function getLetterboxdWatchedTmdbIds(user: User): Promise<Set<number>> {
         .map((m: LetterboxdMovie) => parseInt(m.tmdbId!))
     );
   } catch (e: any) {
-    logger.error(`Error scraping Letterboxd watched films for "${user.letterboxdUsername}":`, e?.message ?? e);
+    logger.error(`Error scraping Letterboxd watched films for "${user.letterboxdUsername}": ${e?.message ?? e}`);
     return new Set();
   }
 }

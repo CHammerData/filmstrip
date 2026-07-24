@@ -210,7 +210,7 @@ export async function reconcileList(list: ListWithUser, currentTmdbIds: Set<numb
     try {
       await cancelStaleLeftListRequests(lm.movieId);
     } catch (e: any) {
-      logger.error(`Reconcile: failed checking stale deletion requests for movie id=${lm.movieId}:`, e?.message ?? e);
+      logger.error(`Reconcile: failed checking stale deletion requests for movie id=${lm.movieId}: ${e?.message ?? e}`);
     }
   }
 
@@ -242,7 +242,7 @@ export async function reconcileList(list: ListWithUser, currentTmdbIds: Set<numb
         requireNotWanted: true,
       });
     } catch (e: any) {
-      logger.error(`Reconcile: failed evaluating movie id=${lm.movieId}:`, e?.message ?? e);
+      logger.error(`Reconcile: failed evaluating movie id=${lm.movieId}: ${e?.message ?? e}`);
     }
   }
 }
@@ -269,7 +269,7 @@ export async function reconcileWatched(list: ListWithUser, watchedTmdbIds: Set<n
         requireNotWanted: false,
       });
     } catch (e: any) {
-      logger.error(`Reconcile (watched): failed evaluating movie id=${lm.movieId}:`, e?.message ?? e);
+      logger.error(`Reconcile (watched): failed evaluating movie id=${lm.movieId}: ${e?.message ?? e}`);
     }
   }
 }
@@ -320,7 +320,7 @@ export async function deleteList(listId: number): Promise<void> {
         requireNotWanted: true,
       });
     } catch (e: any) {
-      logger.error(`List-delete: failed evaluating movie id=${m.movieId}:`, e?.message ?? e);
+      logger.error(`List-delete: failed evaluating movie id=${m.movieId}: ${e?.message ?? e}`);
     }
   }
 }

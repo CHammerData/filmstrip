@@ -50,7 +50,7 @@ export function moviesRouter(): Router {
           for (const rm of await getAllMovies(client)) byTmdbId.set(rm.tmdbId, rm);
           radarrAvailable = true;
         } catch (e) {
-          logger.error('Failed to load Radarr movies for /movies:', e instanceof Error ? e.message : e);
+          logger.error(`Failed to load Radarr movies for /movies: ${e instanceof Error ? e.message : e}`);
         }
       }
 

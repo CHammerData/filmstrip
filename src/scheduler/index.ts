@@ -49,7 +49,7 @@ export async function syncList(list: ListWithUser): Promise<SyncResult> {
       try {
         watchedTmdbIds = await getOwnerWatchedTmdbIds(list.user, settings);
       } catch (e: any) {
-        logger.error(`Failed to resolve watched state for list id=${list.id}:`, e?.message ?? e);
+        logger.error(`Failed to resolve watched state for list id=${list.id}: ${e?.message ?? e}`);
       }
     }
 
@@ -163,7 +163,7 @@ export async function syncList(list: ListWithUser): Promise<SyncResult> {
       try {
         await reconcileList(list, currentTmdbIds);
       } catch (e: any) {
-        logger.error(`Reconcile failed for list id=${list.id}:`, e?.message ?? e);
+        logger.error(`Reconcile failed for list id=${list.id}: ${e?.message ?? e}`);
       }
 
       // removeOnWatch: queue review for anything still on this list the owner has now watched.
@@ -171,7 +171,7 @@ export async function syncList(list: ListWithUser): Promise<SyncResult> {
         try {
           await reconcileWatched(list, watchedTmdbIds);
         } catch (e: any) {
-          logger.error(`Reconcile (watched) failed for list id=${list.id}:`, e?.message ?? e);
+          logger.error(`Reconcile (watched) failed for list id=${list.id}: ${e?.message ?? e}`);
         }
       }
 
@@ -180,7 +180,7 @@ export async function syncList(list: ListWithUser): Promise<SyncResult> {
         try {
           await syncCollection(list, config.collectionName);
         } catch (e: any) {
-          logger.error(`Collection sync failed for list id=${list.id}:`, e?.message ?? e);
+          logger.error(`Collection sync failed for list id=${list.id}: ${e?.message ?? e}`);
         }
       }
     }
@@ -308,8 +308,8 @@ export function startScheduler(): NodeJS.Timeout {
   logger.info(`Starting scheduler (tick every ${SCHEDULER_TICK_MINUTES}m; per-list intervals honored).`);
 
   // Fire once on boot, then on the tick.
-  syncDue().catch((e) => logger.error('Scheduler tick failed:', e));
+  syncDue().catch((e) => logger.error(`Scheduler tick failed: ${e?.message ?? e}`));
   return setInterval(() => {
-    syncDue().catch((e) => logger.error('Scheduler tick failed:', e));
+    syncDue().catch((e) => logger.error(`Scheduler tick failed: ${e?.message ?? e}`));
   }, tickMs);
 }

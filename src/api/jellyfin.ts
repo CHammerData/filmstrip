@@ -145,8 +145,8 @@ export async function getWatchedTmdbIds(client: AxiosInstance, jellyfinUserId: s
         .map((i) => (i.ProviderIds?.Tmdb ? parseInt(i.ProviderIds.Tmdb) : null))
         .filter((id): id is number => id !== null)
     );
-  } catch (error) {
-    logger.error(`Error getting Jellyfin watched items for user ${jellyfinUserId}:`, error);
+  } catch (error: any) {
+    logger.error(`Error getting Jellyfin watched items for user ${jellyfinUserId}: ${error?.message ?? error}`);
     return new Set();
   }
 }
@@ -165,8 +165,8 @@ export async function getAllMovieProviderIds(
       id: i.Id,
       tmdbId: i.ProviderIds?.Tmdb ? parseInt(i.ProviderIds.Tmdb) : null,
     }));
-  } catch (error) {
-    logger.error('Error listing Jellyfin movies:', error);
+  } catch (error: any) {
+    logger.error(`Error listing Jellyfin movies: ${error?.message ?? error}`);
     return [];
   }
 }
@@ -180,8 +180,8 @@ export async function findCollectionByName(client: AxiosInstance, name: string):
     const items: JellyfinItem[] = response.data?.Items ?? [];
     const match = items.find((i) => i.Name === name);
     return match ? { id: match.Id } : null;
-  } catch (error) {
-    logger.error(`Error finding Jellyfin collection "${name}":`, error);
+  } catch (error: any) {
+    logger.error(`Error finding Jellyfin collection "${name}": ${error?.message ?? error}`);
     return null;
   }
 }
@@ -204,8 +204,8 @@ export async function getCollectionItemIds(client: AxiosInstance, collectionId: 
     const response = await client.get('/Items', { params: { ParentId: collectionId, Recursive: true } });
     const items: JellyfinItem[] = response.data?.Items ?? [];
     return items.map((i) => i.Id);
-  } catch (error) {
-    logger.error(`Error listing members of Jellyfin collection ${collectionId}:`, error);
+  } catch (error: any) {
+    logger.error(`Error listing members of Jellyfin collection ${collectionId}: ${error?.message ?? error}`);
     return [];
   }
 }

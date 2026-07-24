@@ -1,8 +1,14 @@
 import { Router } from 'express';
 import prisma from '../../db/client';
-import { asyncHandler, notFound, parseId } from '../http';
+import { asyncHandler, notFound, conflict, badRequest, parseId, HttpError } from '../http';
 import { createRadarrClient, getAllMovies, RadarrMovieResource } from '../../api/radarr';
+import { dropKeepStatus } from '../../reconcile';
+import { requireAdmin } from '../auth';
 import logger from '../../util/logger';
+
+/** A list currently "claims" a film (DESIGN.md §5): present on it, not film-level excluded, and
+ *  the list itself enabled. Stricter than the "sources" a film was ever added from. */
+const LIVE_CLAIM_WHERE = { presentOnList: true, excluded: false, list: { enabled: true } } as const;
 
 /** Live status of a movie in Radarr, joined onto Filmstrip's provenance rows. */
 type RadarrStatus = 'downloaded' | 'wanted' | 'unmonitored' | 'not_in_radarr' | 'unknown';
@@ -37,6 +43,19 @@ export function moviesRouter(): Router {
         },
         orderBy: { title: 'asc' },
       });
+
+      // Current claims (DESIGN.md §5), grouped by movie -- a bulk query rather than N+1, since
+      // this covers every movie on the page at once.
+      const claimRows = await prisma.listMovie.findMany({
+        where: LIVE_CLAIM_WHERE,
+        select: { movieId: true, list: { select: { id: true, label: true } } },
+      });
+      const claimsByMovie = new Map<number, { listId: number; listLabel: string }[]>();
+      for (const row of claimRows) {
+        const arr = claimsByMovie.get(row.movieId) ?? [];
+        arr.push({ listId: row.list.id, listLabel: row.list.label });
+        claimsByMovie.set(row.movieId, arr);
+      }
 
       // Index Radarr's movies by tmdbId for O(1) status lookup. Skipped when unconfigured; if the
       // fetch fails (Radarr down), radarrAvailable stays false so statuses degrade to "unknown".
@@ -77,6 +96,7 @@ export function moviesRouter(): Router {
             listType: lm.list.listType,
             ownerName: lm.list.user.name,
           })),
+          claims: claimsByMovie.get(m.id) ?? [],
         };
       });
 
@@ -93,11 +113,17 @@ export function moviesRouter(): Router {
       const movie = await prisma.movie.findUnique({ where: { id } });
       if (!movie) throw notFound(`Movie id=${id} not found.`);
 
-      const events = await prisma.movieEvent.findMany({
-        where: { movieId: id },
-        include: { list: true },
-        orderBy: { createdAt: 'asc' },
-      });
+      const [events, claims] = await Promise.all([
+        prisma.movieEvent.findMany({
+          where: { movieId: id },
+          include: { list: true },
+          orderBy: { createdAt: 'asc' },
+        }),
+        prisma.listMovie.findMany({
+          where: { ...LIVE_CLAIM_WHERE, movieId: id },
+          select: { list: { select: { id: true, label: true } } },
+        }),
+      ]);
 
       res.json({
         movie: {
@@ -107,6 +133,7 @@ export function moviesRouter(): Router {
           year: movie.year,
           state: movie.state,
         },
+        claims: claims.map((c) => ({ listId: c.list.id, listLabel: c.list.label })),
         events: events.map((e) => ({
           id: e.id,
           type: e.type,
@@ -115,6 +142,25 @@ export function moviesRouter(): Router {
           createdAt: e.createdAt,
         })),
       });
+    })
+  );
+
+  // Manual escape hatch (DESIGN.md §6): release a `kept` film with zero current claims back into
+  // the deletion-review queue. Admin-only, matching the protective class of approve/keep.
+  router.post(
+    '/:id/drop-keep',
+    requireAdmin,
+    asyncHandler(async (req, res) => {
+      const id = parseId(req.params.id);
+      try {
+        await dropKeepStatus(id);
+      } catch (e) {
+        if (!(e instanceof Error) || e instanceof HttpError) throw e;
+        if (/not found/i.test(e.message)) throw notFound(e.message);
+        if (/already|still claimed/i.test(e.message)) throw conflict(e.message);
+        throw badRequest(e.message);
+      }
+      res.json({ id, state: 'deletion_queued' });
     })
   );
 

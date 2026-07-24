@@ -61,7 +61,6 @@ export interface List {
   takeAmount: number | null;
   takeStrategy: string | null;
   checkIntervalMin: number | null;
-  deleteFiles: boolean;
   permanence: boolean;
   unwatchedOnly: boolean;
   removeOnWatch: boolean;
@@ -123,6 +122,13 @@ export interface MovieSource {
   ownerName: string;
 }
 
+// A list currently claiming a film (DESIGN.md §5) -- present on it, not excluded, list enabled.
+// Stricter than (and separate from) `sources` above, which is broader/presence-based history.
+export interface MovieClaim {
+  listId: number;
+  listLabel: string;
+}
+
 export type MovieState = 'wanted' | 'pre_existing' | 'added' | 'deletion_queued' | 'deleted' | 'kept';
 
 export interface MovieRow {
@@ -134,11 +140,15 @@ export interface MovieRow {
   radarrStatus: RadarrStatus;
   radarr: { present: boolean; hasFile: boolean; monitored: boolean; sizeOnDisk: number } | null;
   sources: MovieSource[];
+  claims: MovieClaim[];
 }
 
 export type MovieEventType =
   | 'seen_on_list'
   | 'left_list'
+  | 'list_deleted'
+  | 'list_deactivated'
+  | 'watch_dropped'
   | 'restored_to_list'
   | 'radarr_add_failed'
   | 'added_to_radarr'
@@ -160,6 +170,7 @@ export interface MovieHistoryEvent {
 
 export interface MovieHistory {
   movie: { id: number; tmdbId: number; title: string; year: number | null; state: MovieState };
+  claims: MovieClaim[];
   events: MovieHistoryEvent[];
 }
 

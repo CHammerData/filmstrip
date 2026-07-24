@@ -19,8 +19,17 @@ jest.mock('../api/radarr', () => ({
   createRadarrClient: jest.fn(() => ({})),
   upsertMovies: jest.fn(),
 }));
-jest.mock('../reconcile', () => ({ __esModule: true, reconcileList: jest.fn(), reconcileWatched: jest.fn() }));
-jest.mock('../watched', () => ({ __esModule: true, getOwnerWatchedTmdbIds: jest.fn() }));
+jest.mock('../reconcile', () => ({
+  __esModule: true,
+  reconcileList: jest.fn(),
+  reconcileWatched: jest.fn(),
+  applyPermanenceClaims: jest.fn(),
+}));
+jest.mock('../watched', () => ({
+  __esModule: true,
+  getOwnerWatchedTmdbIds: jest.fn(),
+  getDiaryWatchedDates: jest.fn(),
+}));
 jest.mock('../collections', () => ({ __esModule: true, syncCollection: jest.fn() }));
 jest.mock('../util/logger', () => ({
   debug: jest.fn(),
@@ -32,8 +41,8 @@ jest.mock('../util/logger', () => ({
 import { syncList } from './index';
 import { fetchMoviesFromUrl } from '../scraper';
 import { upsertMovies } from '../api/radarr';
-import { reconcileList, reconcileWatched } from '../reconcile';
-import { getOwnerWatchedTmdbIds } from '../watched';
+import { reconcileList, reconcileWatched, applyPermanenceClaims } from '../reconcile';
+import { getOwnerWatchedTmdbIds, getDiaryWatchedDates } from '../watched';
 import { syncCollection } from '../collections';
 import { ListWithUser } from '../db/config';
 
@@ -51,6 +60,7 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
     defaultMinimumAvailability: 'released',
     defaultCheckIntervalMin: 60,
     dryRun: false,
+    watchedRefreshIntervalMin: 1440,
     createdAt: now,
     updatedAt: now,
     ...overrides,
@@ -65,6 +75,7 @@ function makeList(overrides: Partial<List> = {}): ListWithUser {
     enabled: true,
     letterboxdUsername: null,
     jellyfinUserId: null,
+    lastWatchedRefreshAt: null,
     createdAt: now,
     updatedAt: now,
   };
@@ -83,7 +94,6 @@ function makeList(overrides: Partial<List> = {}): ListWithUser {
     takeAmount: null,
     takeStrategy: null,
     checkIntervalMin: null,
-    deleteFiles: true,
     permanence: false,
     unwatchedOnly: false,
     removeOnWatch: false,
@@ -123,7 +133,9 @@ describe('syncList', () => {
     mockPrisma.list.update.mockResolvedValue({});
     (reconcileList as jest.Mock).mockResolvedValue(undefined);
     (reconcileWatched as jest.Mock).mockResolvedValue(undefined);
+    (applyPermanenceClaims as jest.Mock).mockResolvedValue(undefined);
     (getOwnerWatchedTmdbIds as jest.Mock).mockResolvedValue(new Set());
+    (getDiaryWatchedDates as jest.Mock).mockResolvedValue(new Map());
     (syncCollection as jest.Mock).mockResolvedValue(undefined);
   });
 
@@ -217,6 +229,7 @@ describe('syncList', () => {
     await syncList(makeList());
 
     expect(getOwnerWatchedTmdbIds).not.toHaveBeenCalled();
+    expect(getDiaryWatchedDates).not.toHaveBeenCalled();
   });
 
   it('unwatchedOnly excludes already-watched movies from the add pipeline but not from reconcile', async () => {
@@ -238,9 +251,10 @@ describe('syncList', () => {
     expect(reconcileList).toHaveBeenCalledWith(expect.objectContaining({ id: 10 }), new Set([1, 2]));
   });
 
-  it('removeOnWatch queues review for watched films still on the list', async () => {
+  it('removeOnWatch fetches diary watch dates and passes them to reconcileWatched', async () => {
     (fetchMoviesFromUrl as jest.Mock).mockResolvedValue([movieA]);
-    (getOwnerWatchedTmdbIds as jest.Mock).mockResolvedValue(new Set([1]));
+    const diaryDates = new Map([[1, new Date('2026-02-01')]]);
+    (getDiaryWatchedDates as jest.Mock).mockResolvedValue(diaryDates);
     (upsertMovies as jest.Mock).mockResolvedValue({
       added: 0,
       skipped: 1,
@@ -250,10 +264,11 @@ describe('syncList', () => {
 
     await syncList(makeList({ removeOnWatch: true }));
 
-    expect(reconcileWatched).toHaveBeenCalledWith(expect.objectContaining({ id: 10 }), new Set([1]));
+    expect(getDiaryWatchedDates).toHaveBeenCalledWith(1);
+    expect(reconcileWatched).toHaveBeenCalledWith(expect.objectContaining({ id: 10 }), diaryDates);
   });
 
-  it('does not call reconcileWatched when removeOnWatch is off', async () => {
+  it('does not call reconcileWatched or fetch diary dates when removeOnWatch is off', async () => {
     (fetchMoviesFromUrl as jest.Mock).mockResolvedValue([movieA]);
     (upsertMovies as jest.Mock).mockResolvedValue({
       added: 1,
@@ -265,6 +280,65 @@ describe('syncList', () => {
     await syncList(makeList());
 
     expect(reconcileWatched).not.toHaveBeenCalled();
+    expect(getDiaryWatchedDates).not.toHaveBeenCalled();
+  });
+
+  it('applies permanence claims when the list is permanence, after reconcile', async () => {
+    (fetchMoviesFromUrl as jest.Mock).mockResolvedValue([movieA]);
+    (upsertMovies as jest.Mock).mockResolvedValue({
+      added: 1,
+      skipped: 0,
+      failed: 0,
+      results: [{ movie: movieA, status: 'added', radarrMovieId: 100 }],
+    });
+
+    await syncList(makeList({ permanence: true }));
+
+    expect(applyPermanenceClaims).toHaveBeenCalledWith(expect.objectContaining({ id: 10 }));
+  });
+
+  it('does not apply permanence claims when the list is not permanence', async () => {
+    (fetchMoviesFromUrl as jest.Mock).mockResolvedValue([movieA]);
+    (upsertMovies as jest.Mock).mockResolvedValue({
+      added: 1,
+      skipped: 0,
+      failed: 0,
+      results: [{ movie: movieA, status: 'added', radarrMovieId: 100 }],
+    });
+
+    await syncList(makeList());
+
+    expect(applyPermanenceClaims).not.toHaveBeenCalled();
+  });
+
+  it('does not apply permanence claims in dry-run mode', async () => {
+    mockPrisma.settings.findUnique.mockResolvedValue(makeSettings({ dryRun: true }));
+    (fetchMoviesFromUrl as jest.Mock).mockResolvedValue([movieA]);
+    (upsertMovies as jest.Mock).mockResolvedValue({
+      added: 1,
+      skipped: 0,
+      failed: 0,
+      results: [{ movie: movieA, status: 'dryRun' }],
+    });
+
+    await syncList(makeList({ permanence: true }));
+
+    expect(applyPermanenceClaims).not.toHaveBeenCalled();
+  });
+
+  it('does not fail the sync when permanence pinning throws', async () => {
+    (fetchMoviesFromUrl as jest.Mock).mockResolvedValue([movieA]);
+    (upsertMovies as jest.Mock).mockResolvedValue({
+      added: 1,
+      skipped: 0,
+      failed: 0,
+      results: [{ movie: movieA, status: 'added', radarrMovieId: 100 }],
+    });
+    (applyPermanenceClaims as jest.Mock).mockRejectedValue(new Error('permanence boom'));
+
+    const result = await syncList(makeList({ permanence: true }));
+
+    expect(result.status).toBe('success');
   });
 
   it('syncs a Jellyfin collection when makeCollection is on', async () => {

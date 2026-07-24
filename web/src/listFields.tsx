@@ -14,7 +14,6 @@ export interface ListSettingsForm {
   takeAmount: number | null;
   takeStrategy: string | null;
   checkIntervalMin: number | null;
-  deleteFiles: boolean;
   permanence: boolean;
   unwatchedOnly: boolean;
   removeOnWatch: boolean;
@@ -34,7 +33,6 @@ export const EMPTY_LIST_SETTINGS: ListSettingsForm = {
   takeAmount: null,
   takeStrategy: null,
   checkIntervalMin: null,
-  deleteFiles: true,
   permanence: false,
   unwatchedOnly: false,
   removeOnWatch: false,
@@ -55,10 +53,12 @@ const FIELD_HELP: Record<string, string> = {
   collectionNameOverride: 'Name for the Jellyfin collection (when "Make collection" is on). Blank uses the list label.',
   enabled: 'When off, this list is skipped by the scheduler and manual syncs.',
   monitored: 'Add films to Radarr as monitored so it searches for and upgrades them.',
-  deleteFiles: 'On an approved deletion from this list, also delete the file (not just unmonitor in Radarr).',
-  permanence: 'If this list is deleted, keep its films (pin them) instead of queueing them for deletion review.',
-  unwatchedOnly: 'Skip films the owner has already watched (Letterboxd + Jellyfin) when adding.',
-  removeOnWatch: 'Queue a film for deletion review once the owner watches it, even if it is still on the list.',
+  permanence:
+    'Every film this list currently claims is pinned (kept) immediately and forever, not just when the list is deleted. Cannot be combined with unwatched only / remove on watch.',
+  unwatchedOnly:
+    'Skip films the owner has already watched (Letterboxd + Jellyfin) when adding. Cannot be combined with permanence.',
+  removeOnWatch:
+    'Queue a film for deletion review once the owner’s Letterboxd diary shows it watched after this list added it (unless another list still ordinarily wants it). Cannot be combined with permanence.',
   makeCollection: 'Mirror this list into a Jellyfin collection (BoxSet) of its current films.',
 };
 
@@ -237,10 +237,27 @@ export function ListSettingsFields({
       <div className="toggles-grid">
         <ToggleField label="Enabled" field="enabled" checked={form.enabled} onChange={(v) => set({ enabled: v })} />
         <ToggleField label="Monitored" field="monitored" checked={form.monitored} onChange={(v) => set({ monitored: v })} />
-        <ToggleField label="Delete files" field="deleteFiles" checked={form.deleteFiles} onChange={(v) => set({ deleteFiles: v })} />
-        <ToggleField label="Permanence" field="permanence" checked={form.permanence} onChange={(v) => set({ permanence: v })} />
-        <ToggleField label="Unwatched only" field="unwatchedOnly" checked={form.unwatchedOnly} onChange={(v) => set({ unwatchedOnly: v })} />
-        <ToggleField label="Remove on watch" field="removeOnWatch" checked={form.removeOnWatch} onChange={(v) => set({ removeOnWatch: v })} />
+        <ToggleField
+          label="Permanence"
+          field="permanence"
+          checked={form.permanence}
+          disabled={form.unwatchedOnly || form.removeOnWatch}
+          onChange={(v) => set(v ? { permanence: true, unwatchedOnly: false, removeOnWatch: false } : { permanence: false })}
+        />
+        <ToggleField
+          label="Unwatched only"
+          field="unwatchedOnly"
+          checked={form.unwatchedOnly}
+          disabled={form.permanence}
+          onChange={(v) => set(v ? { unwatchedOnly: true, permanence: false } : { unwatchedOnly: false })}
+        />
+        <ToggleField
+          label="Remove on watch"
+          field="removeOnWatch"
+          checked={form.removeOnWatch}
+          disabled={form.permanence}
+          onChange={(v) => set(v ? { removeOnWatch: true, permanence: false } : { removeOnWatch: false })}
+        />
         <ToggleField label="Make collection" field="makeCollection" checked={form.makeCollection} onChange={(v) => set({ makeCollection: v })} />
       </div>
     </>
@@ -252,17 +269,25 @@ function ToggleField({
   label,
   field,
   checked,
+  disabled,
   onChange,
 }: {
   label: string;
   field: string;
   checked: boolean;
+  disabled?: boolean;
   onChange: (v: boolean) => void;
 }) {
   return (
-    <label style={{ margin: 0 }}>
+    <label style={{ margin: 0, opacity: disabled ? 0.6 : 1 }}>
       <span style={{ display: 'flex', gap: 6, alignItems: 'center', color: 'var(--text)', fontSize: 14 }}>
-        <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} style={{ width: 'auto' }} />
+        <input
+          type="checkbox"
+          checked={checked}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.checked)}
+          style={{ width: 'auto' }}
+        />
         <span style={{ margin: 0 }}>{label}</span>
       </span>
       <Help field={field} />
@@ -283,7 +308,6 @@ export function settingsPayload(form: ListSettingsForm): ListSettingsForm {
     takeAmount: form.takeAmount,
     takeStrategy: emptyToNull(form.takeStrategy),
     checkIntervalMin: form.checkIntervalMin,
-    deleteFiles: form.deleteFiles,
     permanence: form.permanence,
     unwatchedOnly: form.unwatchedOnly,
     removeOnWatch: form.removeOnWatch,

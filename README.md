@@ -212,7 +212,7 @@ npm run cli sync <listId>  # sync one list now
 npm run cli sync-all       # sync every enabled list now
 npm run cli sync-due       # sync only lists whose interval has elapsed
 npm run cli deletions      # show the pending deletion-review queue
-npm run cli approve <id>   # approve: delete from Radarr (file too, if the list's deleteFiles is on)
+npm run cli approve <id>   # approve: delete from Radarr and its file
 npm run cli keep <id>      # keep: pin the film so it's never queued again
 ```
 

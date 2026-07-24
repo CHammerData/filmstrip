@@ -133,7 +133,7 @@ const TMDB_ID = 550;
   });
 
   it('deletes the movie', async () => {
-    await deleteMovie(client, radarrMovieId, false);
+    await deleteMovie(client, radarrMovieId);
 
     const gone = await getMovieById(client, radarrMovieId);
     expect(gone).toBeNull();

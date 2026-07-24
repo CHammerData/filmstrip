@@ -5,6 +5,9 @@ const mockPrisma = {
   settings: { findUnique: jest.fn(), create: jest.fn(), update: jest.fn() },
   user: { findMany: jest.fn(), findUnique: jest.fn(), create: jest.fn(), update: jest.fn(), delete: jest.fn() },
   list: { findMany: jest.fn(), findUnique: jest.fn(), create: jest.fn(), update: jest.fn(), delete: jest.fn() },
+  movie: { findMany: jest.fn(), findUnique: jest.fn() },
+  listMovie: { findMany: jest.fn() },
+  movieEvent: { findMany: jest.fn() },
   deletionRequest: { findMany: jest.fn() },
   syncRun: { findMany: jest.fn() },
 };
@@ -21,6 +24,8 @@ jest.mock('../reconcile', () => ({
   approveDeletion: jest.fn(),
   keepDeletion: jest.fn(),
   deleteList: jest.fn(),
+  handleListDisabled: jest.fn(),
+  dropKeepStatus: jest.fn(),
 }));
 jest.mock('../auth', () => ({
   __esModule: true,
@@ -34,7 +39,7 @@ jest.mock('../util/logger', () => ({ debug: jest.fn(), info: jest.fn(), warn: je
 import request from 'supertest';
 import { createApp, createHeadlessApp } from './app';
 import { syncListById, syncAll, syncDue } from '../scheduler';
-import { approveDeletion, keepDeletion, deleteList } from '../reconcile';
+import { approveDeletion, keepDeletion, deleteList, handleListDisabled, dropKeepStatus } from '../reconcile';
 import { validateSession, login, logout } from '../auth';
 import { JellyfinAuthError } from '../api/jellyfin.errors';
 
@@ -342,6 +347,78 @@ describe('lists', () => {
     );
   });
 
+  it('POST rejects permanence combined with unwatchedOnly', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue({ id: 1, name: 'Chris' });
+    const res = await request(app)
+      .post('/api/lists')
+      .set('Cookie', ADMIN)
+      .send({
+        userId: 1,
+        url: 'https://letterboxd.com/chris/watchlist/',
+        permanence: true,
+        unwatchedOnly: true,
+      });
+    expect(res.status).toBe(400);
+    expect(mockPrisma.list.create).not.toHaveBeenCalled();
+  });
+
+  it('PATCH rejects turning on removeOnWatch when permanence is already on', async () => {
+    mockPrisma.list.findUnique.mockResolvedValue({
+      id: 3,
+      userId: 1,
+      permanence: true,
+      unwatchedOnly: false,
+      removeOnWatch: false,
+      enabled: true,
+      user: { id: 1 },
+    });
+    const res = await request(app)
+      .patch('/api/lists/3')
+      .set('Cookie', ADMIN)
+      .send({ removeOnWatch: true });
+    expect(res.status).toBe(400);
+    expect(mockPrisma.list.update).not.toHaveBeenCalled();
+  });
+
+  it('PATCH disabling a list calls handleListDisabled', async () => {
+    mockPrisma.list.findUnique.mockResolvedValue({
+      id: 3,
+      userId: 1,
+      permanence: false,
+      unwatchedOnly: false,
+      removeOnWatch: false,
+      enabled: true,
+      user: { id: 1, name: 'Chris' },
+    });
+    mockPrisma.list.update.mockResolvedValue({ id: 3, enabled: false });
+    (handleListDisabled as jest.Mock).mockResolvedValue(undefined);
+
+    const res = await request(app).patch('/api/lists/3').set('Cookie', ADMIN).send({ enabled: false });
+
+    expect(res.status).toBe(200);
+    expect(handleListDisabled).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 3, enabled: false, user: expect.objectContaining({ id: 1 }) })
+    );
+  });
+
+  it('PATCH re-enabling a list does not call handleListDisabled', async () => {
+    mockPrisma.list.findUnique.mockResolvedValue({
+      id: 3,
+      userId: 1,
+      permanence: false,
+      unwatchedOnly: false,
+      removeOnWatch: false,
+      enabled: false,
+      user: { id: 1, name: 'Chris' },
+    });
+    mockPrisma.list.update.mockResolvedValue({ id: 3, enabled: true });
+
+    const res = await request(app).patch('/api/lists/3').set('Cookie', ADMIN).send({ enabled: true });
+
+    expect(res.status).toBe(200);
+    expect(handleListDisabled).not.toHaveBeenCalled();
+  });
+
   it('POST /:id/sync returns the SyncResult', async () => {
     // USER (id=2) owns this list, so a non-admin may sync it.
     mockPrisma.list.findUnique.mockResolvedValue({ id: 3, userId: 2 });
@@ -471,6 +548,73 @@ describe('deletions (admin)', () => {
     const res = await request(app).post('/api/deletions/4/keep').set('Cookie', ADMIN);
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ id: 4, status: 'kept' });
+  });
+});
+
+describe('movies', () => {
+  it('GET / includes current claiming lists alongside sources', async () => {
+    mockPrisma.movie.findMany.mockResolvedValue([
+      { id: 1, tmdbId: 100, title: 'A', year: 2020, state: 'added', listMovies: [] },
+    ]);
+    mockPrisma.listMovie.findMany.mockResolvedValue([
+      { movieId: 1, list: { id: 10, label: "Chris's watchlist" } },
+    ]);
+
+    const res = await request(app).get('/api/movies').set('Cookie', USER);
+
+    expect(res.status).toBe(200);
+    expect(res.body[0].claims).toEqual([{ listId: 10, listLabel: "Chris's watchlist" }]);
+  });
+
+  it('GET /:id/history includes current claims', async () => {
+    mockPrisma.movie.findUnique.mockResolvedValue({ id: 1, tmdbId: 100, title: 'A', year: 2020, state: 'kept' });
+    mockPrisma.movieEvent.findMany.mockResolvedValue([]);
+    mockPrisma.listMovie.findMany.mockResolvedValue([]);
+
+    const res = await request(app).get('/api/movies/1/history').set('Cookie', USER);
+
+    expect(res.status).toBe(200);
+    expect(res.body.claims).toEqual([]);
+  });
+
+  it('GET /:id/history 404s for a missing movie', async () => {
+    mockPrisma.movie.findUnique.mockResolvedValue(null);
+
+    const res = await request(app).get('/api/movies/99/history').set('Cookie', USER);
+
+    expect(res.status).toBe(404);
+  });
+
+  it('POST /:id/drop-keep succeeds for an admin', async () => {
+    (dropKeepStatus as jest.Mock).mockResolvedValue(undefined);
+
+    const res = await request(app).post('/api/movies/1/drop-keep').set('Cookie', ADMIN);
+
+    expect(res.status).toBe(200);
+    expect(dropKeepStatus).toHaveBeenCalledWith(1);
+  });
+
+  it('POST /:id/drop-keep is forbidden for a non-admin', async () => {
+    const res = await request(app).post('/api/movies/1/drop-keep').set('Cookie', USER);
+
+    expect(res.status).toBe(403);
+    expect(dropKeepStatus).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/drop-keep maps "not kept" to 400', async () => {
+    (dropKeepStatus as jest.Mock).mockRejectedValue(new Error('Movie id=1 is not kept.'));
+
+    const res = await request(app).post('/api/movies/1/drop-keep').set('Cookie', ADMIN);
+
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /:id/drop-keep maps "still claimed" to 409', async () => {
+    (dropKeepStatus as jest.Mock).mockRejectedValue(new Error('Movie id=1 is still claimed by an enabled list.'));
+
+    const res = await request(app).post('/api/movies/1/drop-keep').set('Cookie', ADMIN);
+
+    expect(res.status).toBe(409);
   });
 });
 

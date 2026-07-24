@@ -179,8 +179,10 @@ export async function setMonitored(
     await client.put(`/api/v3/movie/${movie.id}`, { ...movie, monitored });
 }
 
-export async function deleteMovie(client: AxiosInstance, id: number, deleteFiles: boolean): Promise<void> {
-    await client.delete(`/api/v3/movie/${id}`, { params: { deleteFiles, addImportExclusion: false } });
+/** Deletes a movie from Radarr, always deleting its file too -- standard behavior, not a per-list
+ *  toggle. */
+export async function deleteMovie(client: AxiosInstance, id: number): Promise<void> {
+    await client.delete(`/api/v3/movie/${id}`, { params: { deleteFiles: true, addImportExclusion: false } });
 }
 
 export async function getRootFolderById(client: AxiosInstance, id: string) {

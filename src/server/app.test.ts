@@ -18,6 +18,7 @@ jest.mock('../scheduler', () => ({
   syncListById: jest.fn(),
   syncAll: jest.fn(),
   syncDue: jest.fn(),
+  forceReconcileWatched: jest.fn(),
 }));
 jest.mock('../reconcile', () => ({
   __esModule: true,
@@ -38,7 +39,7 @@ jest.mock('../util/logger', () => ({ debug: jest.fn(), info: jest.fn(), warn: je
 
 import request from 'supertest';
 import { createApp, createHeadlessApp } from './app';
-import { syncListById, syncAll, syncDue } from '../scheduler';
+import { syncListById, syncAll, syncDue, forceReconcileWatched } from '../scheduler';
 import { approveDeletion, keepDeletion, deleteList, handleListDisabled, dropKeepStatus } from '../reconcile';
 import { validateSession, login, logout } from '../auth';
 import { JellyfinAuthError } from '../api/jellyfin.errors';
@@ -289,6 +290,31 @@ describe('users (admin)', () => {
     mockPrisma.user.delete.mockResolvedValue({});
     const res = await request(app).delete('/api/users/2').set('Cookie', ADMIN);
     expect(res.status).toBe(204);
+  });
+
+  it('POST /:id/refresh-watched forces a refresh + reconcile and echoes the result', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue(regularUser);
+    (forceReconcileWatched as jest.Mock).mockResolvedValue({
+      userId: 2,
+      filmsKnownWatched: 12,
+      listsReconciled: [10],
+    });
+    const res = await request(app).post('/api/users/2/refresh-watched').set('Cookie', ADMIN);
+    expect(res.status).toBe(200);
+    expect(forceReconcileWatched).toHaveBeenCalledWith(2);
+    expect(res.body).toEqual({ userId: 2, filmsKnownWatched: 12, listsReconciled: [10] });
+  });
+
+  it('POST /:id/refresh-watched returns 404 when the user is missing', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue(null);
+    const res = await request(app).post('/api/users/999/refresh-watched').set('Cookie', ADMIN);
+    expect(res.status).toBe(404);
+    expect(forceReconcileWatched).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/refresh-watched is forbidden for a non-admin', async () => {
+    const res = await request(app).post('/api/users/2/refresh-watched').set('Cookie', USER);
+    expect(res.status).toBe(403);
   });
 });
 

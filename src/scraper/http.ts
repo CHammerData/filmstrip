@@ -70,28 +70,38 @@ async function fetchWithCurl(url: string): Promise<Response> {
  * scrape requests would otherwise abort an entire sync; retrying with linear backoff makes the
  * scrape resilient to that. A 403 is different: it's a deterministic block on Node's HTTP stack
  * specifically (see `fetchWithCurl`), so retrying via `fetch` again wouldn't help -- falls back to
- * curl immediately instead of burning retries on it. Every other status (404, etc.) still surfaces
- * immediately with the caller's own message.
+ * curl on the same attempt instead of burning a retry on it. But curl itself getting 403 is NOT
+ * treated as final the way Node's 403 is: confirmed in production (Letterboxd's diary pages, hit
+ * once/day per user) that a curl 403 there is intermittent, not a hard block -- the same account
+ * fetches clean on a later day -- so it's retried with the same backoff as a network error instead
+ * of being surfaced on the first attempt. Every other status (404, etc.) still surfaces immediately
+ * with the caller's own message.
  */
 export async function fetchWithRetry(url: string): Promise<Response> {
   let lastErr: unknown;
+  let lastResponse: Response | undefined;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      const response = await fetch(url, { headers: SCRAPER_HEADERS });
+      let response = await fetch(url, { headers: SCRAPER_HEADERS });
+      if (response.status === 403) {
+        logger.debug(`Fetch ${url} got 403 (Node's HTTP stack is blocked here); falling back to curl.`);
+        response = await fetchWithCurl(url);
+      }
       if (response.status !== 403) return response;
-      logger.debug(`Fetch ${url} got 403 (Node's HTTP stack is blocked here); falling back to curl.`);
-      return await fetchWithCurl(url);
+      lastResponse = response; // curl got 403 too -- fall through to the retry/backoff below
     } catch (e) {
       lastErr = e;
-      if (attempt < MAX_ATTEMPTS) {
-        const delay = BASE_DELAY_MS * attempt;
-        logger.debug(
-          `Fetch ${url} failed (attempt ${attempt}/${MAX_ATTEMPTS}): ` +
-            `${e instanceof Error ? e.message : e}; retrying in ${delay}ms.`
-        );
-        await sleep(delay);
-      }
+    }
+    if (attempt < MAX_ATTEMPTS) {
+      const delay = BASE_DELAY_MS * attempt;
+      logger.debug(
+        `Fetch ${url} still failing (attempt ${attempt}/${MAX_ATTEMPTS}): ` +
+          `${lastResponse ? `status ${lastResponse.status}` : lastErr instanceof Error ? lastErr.message : lastErr}; ` +
+          `retrying in ${delay}ms.`
+      );
+      await sleep(delay);
     }
   }
+  if (lastResponse) return lastResponse;
   throw lastErr;
 }

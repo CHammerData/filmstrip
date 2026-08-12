@@ -7,6 +7,7 @@ import {
   setMonitored,
   deleteMovie,
 } from '../api/radarr';
+import { createJellyfinClient, deleteCollection } from '../api/jellyfin';
 import { transitionMovie, logMovieEvent } from '../movieState';
 import logger from '../util/logger';
 
@@ -294,6 +295,13 @@ export async function reconcileList(list: ListWithUser, currentTmdbIds: Set<numb
  * doesn't require the film to have left the list — being watched is its own independent trigger.
  * Logs a `watch_dropped` history event for every film this list drops on watch, regardless of
  * whether the aggregate keeper-rule ends up queuing it (DESIGN.md §5).
+ *
+ * The diary only carries a calendar day (midnight UTC, see `DiaryScraper`), while firstSeenAt is a
+ * real timestamp -- comparing them directly made a same-day watch (added and diary-logged the same
+ * day, the common case for a film that gets watched right after it downloads) almost always read as
+ * "predates firstSeenAt" purely because midnight is earlier than whatever time of day the film was
+ * added. Truncating firstSeenAt to its own UTC day before comparing fixes that while still excluding
+ * a diary date from a genuinely earlier day.
  */
 export async function reconcileWatched(list: ListWithUser, diaryWatchedDates: Map<number, Date>): Promise<void> {
   if (diaryWatchedDates.size === 0) return;
@@ -305,7 +313,13 @@ export async function reconcileWatched(list: ListWithUser, diaryWatchedDates: Ma
 
   for (const lm of current) {
     const watchedAt = diaryWatchedDates.get(lm.movie.tmdbId);
-    if (!watchedAt || watchedAt <= lm.firstSeenAt) continue;
+    if (!watchedAt) continue;
+    const firstSeenDay = Date.UTC(
+      lm.firstSeenAt.getUTCFullYear(),
+      lm.firstSeenAt.getUTCMonth(),
+      lm.firstSeenAt.getUTCDate()
+    );
+    if (watchedAt.getTime() < firstSeenDay) continue;
     if (await hasOrdinaryClaim(lm.movieId)) continue;
 
     try {
@@ -324,6 +338,27 @@ export async function reconcileWatched(list: ListWithUser, diaryWatchedDates: Ma
     } catch (e: any) {
       logger.error(`Reconcile (watched): failed evaluating movie id=${lm.movieId}: ${e?.message ?? e}`);
     }
+  }
+}
+
+/** Delete a deleted list's mirrored Jellyfin collection, if it had one (DESIGN.md §8) -- otherwise
+ *  the BoxSet is stranded in Jellyfin with nothing left in Filmstrip that owns or updates it.
+ *  No-ops quietly if makeCollection was off, no collection was ever created, or Jellyfin isn't
+ *  configured; never throws -- this runs after the list row is already gone. */
+async function deleteListsCollection(list: {
+  label: string;
+  makeCollection: boolean;
+  jellyfinCollectionId: string | null;
+}): Promise<void> {
+  if (!list.makeCollection || !list.jellyfinCollectionId) return;
+  try {
+    const settings = await prisma.settings.findUnique({ where: { id: 1 } });
+    if (!settings?.jellyfinUrl || !settings.jellyfinApiKey) return;
+    const client = createJellyfinClient({ url: settings.jellyfinUrl, apiKey: settings.jellyfinApiKey });
+    await deleteCollection(client, list.jellyfinCollectionId);
+    logger.info(`Deleted Jellyfin collection for list "${list.label}" (id=${list.jellyfinCollectionId}).`);
+  } catch (e: any) {
+    logger.error(`Failed to delete Jellyfin collection for list "${list.label}": ${e?.message ?? e}`);
   }
 }
 
@@ -360,6 +395,7 @@ export async function deleteList(listId: number): Promise<void> {
   }
 
   await prisma.list.delete({ where: { id: listId } }); // cascade-removes this list's ListMovie rows
+  await deleteListsCollection(list);
 
   if (list.permanence) {
     // "Filmstrip-managed" here means it was ever confirmed added (added/deletion_queued/deleted/

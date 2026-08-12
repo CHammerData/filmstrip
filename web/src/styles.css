@@ -133,6 +133,12 @@ h2 {
   padding: 16px;
   margin-bottom: 16px;
 }
+/* Every <table> is wrapped in this (see pages/*) so a table whose content wants to be wider than
+   the page (e.g. Movies' claim/source badge columns) scrolls within its own box instead of
+   overflowing .content and bleeding cell borders out past the page's right edge. */
+.table-wrap {
+  overflow-x: auto;
+}
 table {
   width: 100%;
   border-collapse: collapse;

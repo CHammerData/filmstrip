@@ -128,6 +128,11 @@ model List {
   /// Maintain a Jellyfin collection (BoxSet) mirroring this list's current films.
   makeCollection         Boolean @default(false)
   collectionNameOverride String?
+  /// The BoxSet's Jellyfin item id, set the first time syncCollection creates or adopts one.
+  /// Identity, not the name -- lets label/collectionNameOverride be edited afterward without
+  /// syncCollection re-searching by (now-stale) name and creating a stranded duplicate; it renames
+  /// the existing collection in place instead (DESIGN.md §8).
+  jellyfinCollectionId   String?
 
   lastSyncedAt DateTime?
 

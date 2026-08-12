@@ -21,7 +21,10 @@ import {
   getWatchedTmdbIds,
   getAllMovieProviderIds,
   findCollectionByName,
+  getCollectionById,
   createCollection,
+  renameCollection,
+  deleteCollection,
   getCollectionItemIds,
   addToCollection,
   removeFromCollection,
@@ -152,14 +155,14 @@ describe('jellyfin API', () => {
   });
 
   describe('findCollectionByName', () => {
-    it('returns the matching collection id', async () => {
+    it('returns the matching collection id and name', async () => {
       mockAxiosInstance.get.mockResolvedValueOnce({
         data: { Items: [{ Id: 'col-1', Name: 'Horror Picks' }] },
       });
 
       const result = await findCollectionByName(client, 'Horror Picks');
 
-      expect(result).toEqual({ id: 'col-1' });
+      expect(result).toEqual({ id: 'col-1', name: 'Horror Picks' });
     });
 
     it('returns null when no exact match exists', async () => {
@@ -179,6 +182,33 @@ describe('jellyfin API', () => {
     });
   });
 
+  describe('getCollectionById', () => {
+    it('returns the item id and name', async () => {
+      mockAxiosInstance.get.mockResolvedValueOnce({ data: { Id: 'col-1', Name: 'Horror Picks' } });
+
+      const result = await getCollectionById(client, 'col-1');
+
+      expect(result).toEqual({ id: 'col-1', name: 'Horror Picks' });
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/Items/col-1');
+    });
+
+    it('returns null on a 404 (deleted directly in Jellyfin)', async () => {
+      mockAxiosInstance.get.mockRejectedValueOnce({ response: { status: 404 } });
+
+      const result = await getCollectionById(client, 'col-1');
+
+      expect(result).toBeNull();
+    });
+
+    it('returns null on any other error', async () => {
+      mockAxiosInstance.get.mockRejectedValueOnce(new Error('network error'));
+
+      const result = await getCollectionById(client, 'col-1');
+
+      expect(result).toBeNull();
+    });
+  });
+
   describe('createCollection', () => {
     it('POSTs the name and item ids', async () => {
       mockAxiosInstance.post.mockResolvedValueOnce({ data: { Id: 'col-1' } });
@@ -189,6 +219,32 @@ describe('jellyfin API', () => {
       expect(mockAxiosInstance.post).toHaveBeenCalledWith('/Collections', null, {
         params: { Name: 'Horror Picks', Ids: 'a,b' },
       });
+    });
+  });
+
+  describe('renameCollection', () => {
+    it('fetches current metadata and posts it back with only Name changed', async () => {
+      mockAxiosInstance.get.mockResolvedValueOnce({ data: { Id: 'col-1', Name: 'Old Name', Overview: 'kept as-is' } });
+      mockAxiosInstance.post.mockResolvedValueOnce({});
+
+      await renameCollection(client, 'col-1', 'New Name');
+
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/Items/col-1');
+      expect(mockAxiosInstance.post).toHaveBeenCalledWith('/Items/col-1', {
+        Id: 'col-1',
+        Name: 'New Name',
+        Overview: 'kept as-is',
+      });
+    });
+  });
+
+  describe('deleteCollection', () => {
+    it('DELETEs the item', async () => {
+      mockAxiosInstance.delete.mockResolvedValueOnce({});
+
+      await deleteCollection(client, 'col-1');
+
+      expect(mockAxiosInstance.delete).toHaveBeenCalledWith('/Items/col-1');
     });
   });
 

@@ -58,6 +58,7 @@ function makeList(overrides: Partial<List> = {}, user: User = makeUser()): ListW
     removeOnWatch: false,
     makeCollection: false,
     collectionNameOverride: null,
+    jellyfinCollectionId: null,
     lastSyncedAt: null,
     createdAt: now,
     updatedAt: now,

@@ -4,6 +4,7 @@ const mockPrisma = {
   settings: { findUnique: jest.fn() },
   listMovie: { findMany: jest.fn() },
   movie: { update: jest.fn() },
+  list: { update: jest.fn() },
 };
 
 jest.mock('../db/client', () => ({ __esModule: true, default: mockPrisma }));
@@ -12,7 +13,9 @@ jest.mock('../api/jellyfin', () => ({
   createJellyfinClient: jest.fn(() => ({})),
   getAllMovieProviderIds: jest.fn(),
   findCollectionByName: jest.fn(),
+  getCollectionById: jest.fn(),
   createCollection: jest.fn(),
+  renameCollection: jest.fn(),
   getCollectionItemIds: jest.fn(),
   addToCollection: jest.fn(),
   removeFromCollection: jest.fn(),
@@ -28,7 +31,9 @@ import { syncCollection } from './index';
 import {
   getAllMovieProviderIds,
   findCollectionByName,
+  getCollectionById,
   createCollection,
+  renameCollection,
   getCollectionItemIds,
   addToCollection,
   removeFromCollection,
@@ -88,6 +93,7 @@ function makeList(overrides: Partial<List> = {}): ListWithUser {
     removeOnWatch: false,
     makeCollection: true,
     collectionNameOverride: null,
+    jellyfinCollectionId: null,
     lastSyncedAt: null,
     createdAt: now,
     updatedAt: now,
@@ -117,6 +123,7 @@ describe('syncCollection', () => {
     jest.clearAllMocks();
     mockPrisma.settings.findUnique.mockResolvedValue(makeSettings());
     mockPrisma.movie.update.mockResolvedValue({});
+    mockPrisma.list.update.mockResolvedValue({});
     (getAllMovieProviderIds as jest.Mock).mockResolvedValue([{ id: 'jf-1', tmdbId: 100 }]);
   });
 
@@ -126,10 +133,11 @@ describe('syncCollection', () => {
 
     await syncCollection(makeList(), "Chris's watchlist");
 
+    expect(getCollectionById).not.toHaveBeenCalled();
     expect(findCollectionByName).not.toHaveBeenCalled();
   });
 
-  it('creates a new collection when none exists', async () => {
+  it('creates a new collection when none exists and persists its id', async () => {
     mockPrisma.listMovie.findMany.mockResolvedValue([{ movie: makeMovie() }]);
     (findCollectionByName as jest.Mock).mockResolvedValue(null);
     (createCollection as jest.Mock).mockResolvedValue({ id: 'col-1' });
@@ -137,6 +145,10 @@ describe('syncCollection', () => {
     await syncCollection(makeList(), "Chris's watchlist");
 
     expect(createCollection).toHaveBeenCalledWith(expect.anything(), "Chris's watchlist", ['jf-1']);
+    expect(mockPrisma.list.update).toHaveBeenCalledWith({
+      where: { id: 10 },
+      data: { jellyfinCollectionId: 'col-1' },
+    });
     expect(mockPrisma.movie.update).toHaveBeenCalledWith({
       where: { id: 1 },
       data: { jellyfinItemId: 'jf-1' },
@@ -152,11 +164,57 @@ describe('syncCollection', () => {
     expect(createCollection).not.toHaveBeenCalled();
   });
 
+  it('looks up by the stored jellyfinCollectionId instead of searching by name', async () => {
+    mockPrisma.listMovie.findMany.mockResolvedValue([
+      { movie: makeMovie({ id: 1, tmdbId: 100, jellyfinItemId: 'jf-1' }) },
+    ]);
+    (getCollectionById as jest.Mock).mockResolvedValue({ id: 'col-1', name: "Chris's watchlist" });
+    (getCollectionItemIds as jest.Mock).mockResolvedValue(['jf-1']);
+
+    await syncCollection(makeList({ jellyfinCollectionId: 'col-1' }), "Chris's watchlist");
+
+    expect(getCollectionById).toHaveBeenCalledWith(expect.anything(), 'col-1');
+    expect(findCollectionByName).not.toHaveBeenCalled();
+    expect(mockPrisma.list.update).not.toHaveBeenCalled(); // id unchanged -- nothing to persist
+    expect(renameCollection).not.toHaveBeenCalled(); // name unchanged -- nothing to rename
+  });
+
+  it('renames the existing collection in place when the list label/override changed, instead of creating a duplicate', async () => {
+    mockPrisma.listMovie.findMany.mockResolvedValue([
+      { movie: makeMovie({ id: 1, tmdbId: 100, jellyfinItemId: 'jf-1' }) },
+    ]);
+    (getCollectionById as jest.Mock).mockResolvedValue({ id: 'col-1', name: 'Old Name' });
+    (getCollectionItemIds as jest.Mock).mockResolvedValue(['jf-1']);
+
+    await syncCollection(makeList({ jellyfinCollectionId: 'col-1' }), 'New Name');
+
+    expect(renameCollection).toHaveBeenCalledWith(expect.anything(), 'col-1', 'New Name');
+    expect(createCollection).not.toHaveBeenCalled();
+    expect(findCollectionByName).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a name search and adopts the match when the stored id no longer resolves', async () => {
+    mockPrisma.listMovie.findMany.mockResolvedValue([
+      { movie: makeMovie({ id: 1, tmdbId: 100, jellyfinItemId: 'jf-1' }) },
+    ]);
+    (getCollectionById as jest.Mock).mockResolvedValue(null); // e.g. deleted directly in Jellyfin
+    (findCollectionByName as jest.Mock).mockResolvedValue({ id: 'col-new', name: "Chris's watchlist" });
+    (getCollectionItemIds as jest.Mock).mockResolvedValue(['jf-1']);
+
+    await syncCollection(makeList({ jellyfinCollectionId: 'col-stale' }), "Chris's watchlist");
+
+    expect(createCollection).not.toHaveBeenCalled();
+    expect(mockPrisma.list.update).toHaveBeenCalledWith({
+      where: { id: 10 },
+      data: { jellyfinCollectionId: 'col-new' },
+    });
+  });
+
   it('diffs membership against an existing collection', async () => {
     mockPrisma.listMovie.findMany.mockResolvedValue([
       { movie: makeMovie({ id: 1, tmdbId: 100, jellyfinItemId: 'jf-1' }) },
     ]);
-    (findCollectionByName as jest.Mock).mockResolvedValue({ id: 'col-1' });
+    (findCollectionByName as jest.Mock).mockResolvedValue({ id: 'col-1', name: "Chris's watchlist" });
     (getCollectionItemIds as jest.Mock).mockResolvedValue(['jf-1', 'jf-stale']);
 
     await syncCollection(makeList(), "Chris's watchlist");
@@ -172,7 +230,7 @@ describe('syncCollection', () => {
     mockPrisma.listMovie.findMany.mockResolvedValue([
       { movie: makeMovie({ jellyfinItemId: 'jf-cached' }) },
     ]);
-    (findCollectionByName as jest.Mock).mockResolvedValue({ id: 'col-1' });
+    (findCollectionByName as jest.Mock).mockResolvedValue({ id: 'col-1', name: "Chris's watchlist" });
     (getCollectionItemIds as jest.Mock).mockResolvedValue(['jf-cached']);
 
     await syncCollection(makeList(), "Chris's watchlist");

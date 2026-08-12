@@ -59,6 +59,8 @@ List
                                  this list's own claim, unless another ordinary claim remains (§7) [M4 ✅]
   makeCollection    bool=false   maintain a Jellyfin collection of this list [M4 ✅, unverified live]
   collectionNameOverride  string?                                   [M4 ✅]
+  jellyfinCollectionId    string? the BoxSet's Jellyfin item id, set on first create/adopt --
+                                 identity, not the name, so relabeling doesn't strand a duplicate (§8)
   permanence        bool=false   any film this list currently claims is pinned to `kept`
                                  immediately, live -- not just when the list is deleted (§4-§5) [✅]
 
@@ -280,9 +282,13 @@ since neither can distinguish "just watched" from "watched years ago."
 Needed for two features:
 - **Collections (`makeCollection`)** — maintain a Jellyfin collection (BoxSet) named after the
   list (or `collectionNameOverride`); membership = the list's films matched to Jellyfin items by
-  tmdb id (`src/collections/index.ts`, backed by `src/api/jellyfin.ts`). **Caveat:** verified
-  against a real Jellyfin server via `live-api-test.yml`, but that instance's library was empty —
-  wire compatibility is confirmed, real-media collection matching is not yet exercised end-to-end.
+  tmdb id (`src/collections/index.ts`, backed by `src/api/jellyfin.ts`). Tracked by identity
+  (`List.jellyfinCollectionId`), not by re-searching for the name each sync — a name search would
+  stop matching (and create a stranded duplicate) the moment the list's label/collectionNameOverride
+  changes; a name mismatch on the id-resolved collection is instead applied as a rename. Deleting the
+  list deletes its mirrored collection too, if one was ever created. **Caveat:** verified against a
+  real Jellyfin server via `live-api-test.yml`, but that instance's library was empty — wire
+  compatibility is confirmed, real-media collection matching is not yet exercised end-to-end.
 - **Watched state** — read per-user playback (§7).
 
 Connection lives on `Settings` (single Radarr, single Jellyfin for now).

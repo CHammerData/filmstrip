@@ -30,6 +30,11 @@ jest.mock('../api/radarr', () => ({
   setMonitored: jest.fn(),
   deleteMovie: jest.fn(),
 }));
+jest.mock('../api/jellyfin', () => ({
+  __esModule: true,
+  createJellyfinClient: jest.fn(() => ({})),
+  deleteCollection: jest.fn(),
+}));
 jest.mock('../util/logger', () => ({
   debug: jest.fn(),
   info: jest.fn(),
@@ -48,6 +53,7 @@ import {
   dropKeepStatus,
 } from './index';
 import { getMovieById, getAllTags, setMonitored, deleteMovie } from '../api/radarr';
+import { deleteCollection } from '../api/jellyfin';
 import { ListWithUser } from '../db/config';
 
 const now = new Date('2026-01-01T00:00:00Z');
@@ -103,6 +109,7 @@ function makeList(overrides: Partial<List> = {}): ListWithUser {
     removeOnWatch: false,
     makeCollection: false,
     collectionNameOverride: null,
+    jellyfinCollectionId: null,
     lastSyncedAt: null,
     createdAt: now,
     updatedAt: now,
@@ -484,6 +491,21 @@ describe('reconcileWatched', () => {
     expect(mockPrisma.movieEvent.create).not.toHaveBeenCalled();
   });
 
+  it('queues a film added and diary-logged on the same calendar day (firstSeenAt has a later time-of-day than the diary\'s midnight-UTC date)', async () => {
+    const addedLaterSameDay = new Date('2026-06-01T14:00:00Z');
+    const diaryMidnightSameDay = new Date('2026-06-01T00:00:00Z');
+    mockPrisma.listMovie.findMany.mockResolvedValue([
+      { movieId: 1, firstSeenAt: addedLaterSameDay, movie: { tmdbId: 100 } },
+    ]);
+    mockPrisma.movie.findUnique.mockResolvedValue(makeMovie());
+
+    await reconcileWatched(makeList(), new Map([[100, diaryMidnightSameDay]]));
+
+    expect(mockPrisma.deletionRequest.create).toHaveBeenCalledWith({
+      data: { movieId: 1, reason: 'watched', triggeredByListId: 10, status: 'pending' },
+    });
+  });
+
   it('defers to another enabled, non-removeOnWatch list that still ordinarily claims the film', async () => {
     mockPrisma.listMovie.findMany.mockResolvedValue([
       { movieId: 1, firstSeenAt: before, movie: { tmdbId: 100 } },
@@ -661,6 +683,62 @@ describe('deleteList', () => {
     mockPrisma.list.findUnique.mockResolvedValue({ id: 10, label: 'L', permanence: false });
     mockPrisma.listMovie.findMany.mockResolvedValue([{ movieId: 1, movie: { state: 'added' } }]);
     mockPrisma.movie.findUnique.mockRejectedValue(new Error('db boom'));
+
+    await expect(deleteList(10)).resolves.toBeUndefined();
+    expect(mockPrisma.list.delete).toHaveBeenCalled();
+  });
+
+  it('deletes the mirrored Jellyfin collection when the list had makeCollection on', async () => {
+    mockPrisma.list.findUnique.mockResolvedValue({
+      id: 10,
+      label: 'L',
+      permanence: false,
+      makeCollection: true,
+      jellyfinCollectionId: 'col-1',
+    });
+    mockPrisma.listMovie.findMany.mockResolvedValue([]);
+    mockPrisma.settings.findUnique.mockResolvedValue(makeSettings({ jellyfinUrl: 'http://jf', jellyfinApiKey: 'key' }));
+
+    await deleteList(10);
+
+    expect(deleteCollection).toHaveBeenCalledWith(expect.anything(), 'col-1');
+  });
+
+  it('does not attempt to delete a collection when makeCollection was off', async () => {
+    mockPrisma.list.findUnique.mockResolvedValue({ id: 10, label: 'L', permanence: false, makeCollection: false });
+    mockPrisma.listMovie.findMany.mockResolvedValue([]);
+
+    await deleteList(10);
+
+    expect(deleteCollection).not.toHaveBeenCalled();
+  });
+
+  it('does not attempt to delete a collection that was never created (no stored id)', async () => {
+    mockPrisma.list.findUnique.mockResolvedValue({
+      id: 10,
+      label: 'L',
+      permanence: false,
+      makeCollection: true,
+      jellyfinCollectionId: null,
+    });
+    mockPrisma.listMovie.findMany.mockResolvedValue([]);
+
+    await deleteList(10);
+
+    expect(deleteCollection).not.toHaveBeenCalled();
+  });
+
+  it('still deletes the list if removing its Jellyfin collection fails', async () => {
+    mockPrisma.list.findUnique.mockResolvedValue({
+      id: 10,
+      label: 'L',
+      permanence: false,
+      makeCollection: true,
+      jellyfinCollectionId: 'col-1',
+    });
+    mockPrisma.listMovie.findMany.mockResolvedValue([]);
+    mockPrisma.settings.findUnique.mockResolvedValue(makeSettings({ jellyfinUrl: 'http://jf', jellyfinApiKey: 'key' }));
+    (deleteCollection as jest.Mock).mockRejectedValue(new Error('jellyfin down'));
 
     await expect(deleteList(10)).resolves.toBeUndefined();
     expect(mockPrisma.list.delete).toHaveBeenCalled();

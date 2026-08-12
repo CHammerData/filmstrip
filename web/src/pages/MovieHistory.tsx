@@ -92,26 +92,28 @@ export default function MovieHistory() {
           {history.data.events.length === 0 ? (
             <p className="muted">No history recorded for this film yet.</p>
           ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th>When</th>
-                  <th>Event</th>
-                  <th>List</th>
-                  <th>Detail</th>
-                </tr>
-              </thead>
-              <tbody>
-                {history.data.events.map((e) => (
-                  <tr key={e.id}>
-                    <td className="muted">{formatWhen(e.createdAt)}</td>
-                    <td>{EVENT_LABELS[e.type] ?? e.type}</td>
-                    <td className="muted">{e.listLabel ?? '—'}</td>
-                    <td className="muted">{e.detail ?? '—'}</td>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>When</th>
+                    <th>Event</th>
+                    <th>List</th>
+                    <th>Detail</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {history.data.events.map((e) => (
+                    <tr key={e.id}>
+                      <td className="muted">{formatWhen(e.createdAt)}</td>
+                      <td>{EVENT_LABELS[e.type] ?? e.type}</td>
+                      <td className="muted">{e.listLabel ?? '—'}</td>
+                      <td className="muted">{e.detail ?? '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </>
       )}

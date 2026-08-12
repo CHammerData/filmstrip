@@ -208,6 +208,13 @@ export interface SyncResult {
   dryRun: boolean;
 }
 
+// Result of POST /users/:id/refresh-watched -- the "check watched now" admin action.
+export interface ForceReconcileWatchedResult {
+  userId: number;
+  filmsKnownWatched: number;
+  listsReconciled: number[];
+}
+
 export interface Me {
   user: User;
   isAdmin: boolean;

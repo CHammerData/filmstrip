@@ -64,67 +64,71 @@ export default function Lists() {
       {lists.data && lists.data.length === 0 && <p className="muted">No lists yet.</p>}
 
       {lists.data && lists.data.length > 0 && (
-        <table>
-          <thead>
-            <tr>
-              <th>Label</th>
-              <th>Type</th>
-              <th>Owner</th>
-              <th>Enabled</th>
-              <th>Last synced</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {lists.data.map((l) => (
-              <Fragment key={l.id}>
-                <tr>
-                  <td>
-                    {l.label}
-                    <div className="muted" style={{ fontSize: 12 }}>
-                      {l.url}
-                    </div>
-                  </td>
-                  <td>{l.listType}</td>
-                  <td>{l.user?.name ?? l.userId}</td>
-                  <td>{l.enabled ? 'yes' : 'no'}</td>
-                  <td className="muted">{l.lastSyncedAt ? new Date(l.lastSyncedAt).toLocaleString() : 'never'}</td>
-                  <td className="actions">
-                    {canManage(l) && (
-                      <button className="secondary" onClick={() => syncNow(l.id)}>
-                        Sync
-                      </button>
-                    )}
-                    {canManage(l) && (
-                      <button className="secondary" onClick={() => setEditing(editing === l.id ? null : l.id)}>
-                        Edit
-                      </button>
-                    )}
-                    {canManage(l) && (
-                      <button className="danger" onClick={() => remove(l.id)}>
-                        Delete
-                      </button>
-                    )}
-                  </td>
-                </tr>
-                {editing === l.id && (
-                  <tr key={`${l.id}-edit`}>
-                    <td colSpan={6}>
-                      <EditList
-                        list={l}
-                        radarrOptions={radarr.data ?? null}
-                        onSaved={() => {
-                          setEditing(null);
-                          lists.reload();
-                        }}
-                      />
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Label</th>
+                <th>Type</th>
+                <th>Owner</th>
+                <th>Enabled</th>
+                <th>Last synced</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {lists.data.map((l) => (
+                <Fragment key={l.id}>
+                  <tr>
+                    <td>
+                      {l.label}
+                      <div className="muted" style={{ fontSize: 12 }}>
+                        {l.url}
+                      </div>
+                    </td>
+                    <td>{l.listType}</td>
+                    <td>{l.user?.name ?? l.userId}</td>
+                    <td>{l.enabled ? 'yes' : 'no'}</td>
+                    <td className="muted">{l.lastSyncedAt ? new Date(l.lastSyncedAt).toLocaleString() : 'never'}</td>
+                    <td>
+                      <div className="actions">
+                        {canManage(l) && (
+                          <button className="secondary" onClick={() => syncNow(l.id)}>
+                            Sync
+                          </button>
+                        )}
+                        {canManage(l) && (
+                          <button className="secondary" onClick={() => setEditing(editing === l.id ? null : l.id)}>
+                            Edit
+                          </button>
+                        )}
+                        {canManage(l) && (
+                          <button className="danger" onClick={() => remove(l.id)}>
+                            Delete
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
-                )}
-              </Fragment>
-            ))}
-          </tbody>
-        </table>
+                  {editing === l.id && (
+                    <tr key={`${l.id}-edit`}>
+                      <td colSpan={6}>
+                        <EditList
+                          list={l}
+                          radarrOptions={radarr.data ?? null}
+                          onSaved={() => {
+                            setEditing(null);
+                            lists.reload();
+                          }}
+                        />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

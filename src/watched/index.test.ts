@@ -177,6 +177,26 @@ describe('refreshWatchedState', () => {
     mockPrisma.user.update.mockResolvedValue({});
   });
 
+  it('fetches the diary and the aggregate list sequentially, not concurrently', async () => {
+    // Confirmed live: firing both at once against the same account's profile pages got both
+    // 403'd within ~350ms of each other; run one at a time, they succeed reliably.
+    const callOrder: string[] = [];
+    (DiaryScraper as jest.Mock).mockImplementation(() => ({
+      getEntries: jest.fn().mockImplementation(async () => {
+        callOrder.push('diary');
+        return [];
+      }),
+    }));
+    (fetchMoviesFromUrl as jest.Mock).mockImplementation(async () => {
+      callOrder.push('aggregate');
+      return [];
+    });
+
+    await refreshWatchedState(makeUser({ letterboxdUsername: 'chris' }), makeSettings());
+
+    expect(callOrder).toEqual(['diary', 'aggregate']);
+  });
+
   it('upserts a diary-dated film with source letterboxd_diary', async () => {
     mockDiaryEntries([{ tmdbId: '127380', watchedAt: new Date('2026-07-15T00:00:00Z') }]);
 

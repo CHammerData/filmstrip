@@ -92,9 +92,13 @@ Module layout:
   sources (diary — `src/scraper/diary.ts`, dated; aggregate `/films/`; Jellyfin), diary always
   winning on a real date; `refreshDueUsers`/`startWatchedStateScheduler` run it per-user on
   `Settings.watchedRefreshIntervalMin`, independent of any list's sync (wired into `src/index.ts`
-  alongside `startScheduler`). `getDiaryWatchedDates(userId)` reads the cache back as a
-  `tmdbId -> watchedAt` map (`letterboxd_diary` rows only) — what `removeOnWatch` reads (DESIGN.md
-  §7). Any source missing/failing degrades to empty, never throws.
+  alongside `startScheduler`). The diary and aggregate fetches run one after another, not
+  concurrently — confirmed live that firing both at once against the same account's own profile
+  pages (`/diary/` and `/films/`) got both 403'd within ~350ms of each other, while either run in
+  isolation succeeds reliably; Jellyfin is a different host, so it still runs concurrently with
+  them. `getDiaryWatchedDates(userId)` reads the cache back as a `tmdbId -> watchedAt` map
+  (`letterboxd_diary` rows only) — what `removeOnWatch` reads (DESIGN.md §7). Any source
+  missing/failing degrades to empty, never throws.
 - **`src/collections/index.ts`** — `syncCollection(list, collectionName)`: resolves each of the
   list's current films to a Jellyfin item id (cached on `Movie.jellyfinItemId` after the first
   lookup), then creates or diffs membership of the BoxSet. Tracks the collection by

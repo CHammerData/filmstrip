@@ -79,13 +79,21 @@ export async function getDiaryWatchedDates(userId: number): Promise<Map<number, 
  * the only thing removeOnWatch is ever allowed to compare against (a watched-but-undiaried film
  * can raise unwatchedOnly's presence check, but never removeOnWatch's date check). A film logged
  * more than once in the diary (a rewatch) keeps its most recent date.
+ *
+ * The two Letterboxd-hitting fetches (diary, aggregate) are run one after another, not
+ * concurrently. Confirmed live: firing both at once at this account's own profile pages
+ * (`/diary/` and `/films/`) got both 403'd within ~350ms of each other, while either one run in
+ * isolation (no concurrent request to the same account) succeeds reliably -- two simultaneous
+ * requests to the same profile is a pattern a real browser session never produces, and it
+ * apparently reads as bot traffic even though a single request doesn't. Jellyfin is a different
+ * host entirely, so it still runs concurrently with the Letterboxd fetches -- no shared rate limit
+ * to collide with.
  */
 export async function refreshWatchedState(user: User, settings: Settings): Promise<void> {
-  const [diaryEntries, aggregateIds, jellyfinIds] = await Promise.all([
-    getLetterboxdDiaryEntries(user),
-    getLetterboxdWatchedTmdbIds(user),
-    getJellyfinWatchedTmdbIdsForUser(user, settings),
-  ]);
+  const jellyfinPromise = getJellyfinWatchedTmdbIdsForUser(user, settings);
+  const diaryEntries = await getLetterboxdDiaryEntries(user);
+  const aggregateIds = await getLetterboxdWatchedTmdbIds(user);
+  const jellyfinIds = await jellyfinPromise;
 
   const byTmdbId = new Map<number, { watchedAt: Date | null; source: string }>();
   for (const tmdbId of aggregateIds) byTmdbId.set(tmdbId, { watchedAt: null, source: 'letterboxd_aggregate' });

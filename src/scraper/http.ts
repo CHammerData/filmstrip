@@ -21,7 +21,7 @@ const SCRAPER_HEADERS = {
 export const SCRAPE_CONCURRENCY = 6;
 
 const MAX_ATTEMPTS = 3;
-const BASE_DELAY_MS = 500;
+const BASE_DELAY_MS = 1500;
 const CURL_TIMEOUT_SECONDS = 20;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -70,21 +70,31 @@ async function fetchWithCurl(url: string): Promise<Response> {
  * scrape requests would otherwise abort an entire sync; retrying with linear backoff makes the
  * scrape resilient to that. A 403 is different: it's a deterministic block on Node's HTTP stack
  * specifically (see `fetchWithCurl`), so retrying via `fetch` again wouldn't help -- falls back to
- * curl on the same attempt instead of burning a retry on it. But curl itself getting 403 is NOT
- * treated as final the way Node's 403 is: confirmed in production (Letterboxd's diary pages, hit
- * once/day per user) that a curl 403 there is intermittent, not a hard block -- the same account
- * fetches clean on a later day -- so it's retried with the same backoff as a network error instead
- * of being surfaced on the first attempt. Every other status (404, etc.) still surfaces immediately
- * with the caller's own message.
+ * curl on the same attempt instead of burning a retry on it.
+ *
+ * Once `fetch` has 403'd once in a call, it is NOT tried again on later attempts -- confirmed live
+ * (Letterboxd's diary pages) that repeating it doesn't just waste a request, it appears to actively
+ * re-trigger the block that then also catches the very curl call riding right behind it: a lone,
+ * cold curl request to the same URL succeeds reliably, but fetch-then-curl repeated 3x in ~1.5s
+ * failed every time in production. So a 403 from curl itself is retried curl-only, with backoff,
+ * instead of pairing it with another doomed `fetch` call. Every other status (404, etc.) still
+ * surfaces immediately with the caller's own message.
  */
 export async function fetchWithRetry(url: string): Promise<Response> {
   let lastErr: unknown;
   let lastResponse: Response | undefined;
+  let nodeFetchBlocked = false;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      let response = await fetch(url, { headers: SCRAPER_HEADERS });
-      if (response.status === 403) {
-        logger.debug(`Fetch ${url} got 403 (Node's HTTP stack is blocked here); falling back to curl.`);
+      let response: Response;
+      if (!nodeFetchBlocked) {
+        response = await fetch(url, { headers: SCRAPER_HEADERS });
+        if (response.status === 403) {
+          nodeFetchBlocked = true;
+          logger.debug(`Fetch ${url} got 403 (Node's HTTP stack is blocked here); falling back to curl.`);
+          response = await fetchWithCurl(url);
+        }
+      } else {
         response = await fetchWithCurl(url);
       }
       if (response.status !== 403) return response;

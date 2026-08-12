@@ -73,12 +73,15 @@ Module layout:
   per-movie outcomes; `getMovieById`/`getAllTags`/`setMonitored`/`deleteMovie(client, id)` (always
   deletes the file — no longer a caller-supplied flag) back the reconcile flow. No global/env reads.
 - **`src/api/jellyfin.ts`** — `createJellyfinClient({url, apiKey})`; `getWatchedTmdbIds` (per-user
-  played movies), `getAllMovieProviderIds` (library-wide tmdbId→item-id map), and the
-  `findCollectionByName`/`createCollection`/`getCollectionItemIds`/`addToCollection`/
-  `removeFromCollection` BoxSet helpers. Verified against a real `lscr.io/linuxserver/jellyfin`
-  instance (`src/api/jellyfin.livetest.ts` + `live-api-test.yml`) — the library was empty (no media
-  files) in that run, so wire compatibility (paths/params/auth/response shape) is confirmed but
-  real-media collection matching is not exercised end-to-end.
+  played movies), `getAllMovieProviderIds` (library-wide tmdbId→item-id map), and the BoxSet helpers:
+  `findCollectionByName` (name search, only used to adopt a pre-existing/hand-created collection),
+  `getCollectionById` (identity lookup, null on a 404 or any other fetch failure),
+  `createCollection`, `renameCollection` (GETs current metadata, POSTs it back with only `Name`
+  changed -- Jellyfin's update endpoint replaces the full payload), `deleteCollection`,
+  `getCollectionItemIds`/`addToCollection`/`removeFromCollection`. Verified against a real
+  `lscr.io/linuxserver/jellyfin` instance (`src/api/jellyfin.livetest.ts` + `live-api-test.yml`) —
+  the library was empty (no media files) in that run, so wire compatibility (paths/params/auth/
+  response shape) is confirmed but real-media collection matching is not exercised end-to-end.
 - **`src/db/`** — `client.ts` (PrismaClient singleton) and `config.ts`
   (`resolveListConfig(list, settings)`: merges overrides over defaults, assembles tags as
   `[userTag, "letterboxd", ...extraTags]`, throws on missing Radarr connection / quality profile;
@@ -94,7 +97,15 @@ Module layout:
   §7). Any source missing/failing degrades to empty, never throws.
 - **`src/collections/index.ts`** — `syncCollection(list, collectionName)`: resolves each of the
   list's current films to a Jellyfin item id (cached on `Movie.jellyfinItemId` after the first
-  lookup), then creates or diffs membership of the named BoxSet.
+  lookup), then creates or diffs membership of the BoxSet. Tracks the collection by
+  `List.jellyfinCollectionId` (identity), not by re-searching for `collectionName` every run --
+  editing a list's label/collectionNameOverride used to stop matching the old collection by name and
+  create a duplicate, stranding the original in Jellyfin. A stored id that no longer resolves (404 --
+  deleted directly in Jellyfin) falls back to a one-time `findCollectionByName` to adopt a
+  pre-existing/hand-created collection instead of duplicating it; once adopted, a name mismatch is
+  applied as a rename via `renameCollection`, not treated as a miss. `reconcile.deleteList` deletes
+  the mirrored collection (`deleteCollection`) when the deleted list had `makeCollection` on and an
+  id on record.
 - **`src/movieState.ts`** — the single place allowed to write `Movie.state` (DESIGN.md §4).
   `transitionMovie(tx, movieId, toState, event)` updates `Movie.state` and appends a `MovieEvent`
   in one call; `logMovieEvent(tx, movieId, event)` appends a history event without changing state
@@ -110,7 +121,10 @@ Module layout:
   the deprecated live scrape) → `applyPermanenceClaims` if `permanence` (must run after both
   reconciles — DESIGN.md §5) → `syncCollection` if `makeCollection`; dry-run writes no rows and
   skips all of the above; failures are recorded, never thrown), plus `syncListById`, `syncAll`,
-  `syncDue`, and `startScheduler`.
+  `syncDue`, and `startScheduler`. `forceReconcileWatched(userId)` is the manual "check watched now"
+  path (Users page): forces that user's `refreshWatchedState` immediately (bypassing
+  `watchedRefreshIntervalMin`'s due-check), then runs `reconcileWatched` against every enabled
+  `removeOnWatch` list they own, without waiting for each list's own next sync.
 - **`src/reconcile/index.ts`** — the keeper-rule (DESIGN.md §4-§6), built around one shared
   predicate: `hasClaim(movieId)`/`hasOrdinaryClaim(movieId)` (the latter excludes `removeOnWatch`
   lists — only used for cancelling a `watched` request). `reconcileList(list, currentTmdbIds)` flips
@@ -133,9 +147,11 @@ Module layout:
   list-deletion — auto-resolving a pending request to `kept` when coming from `deletion_queued`.
   `handleListDisabled(list)` (called from the lists route the instant `enabled` flips false) logs
   `list_deactivated` for every claim the list was holding, then evaluates each for deletion.
-  `deleteList(id)` logs `list_deleted` for every member *before* deleting the list row, then either
-  transitions its Filmstrip-managed films straight to `kept` (if `List.permanence`; already-`kept`
-  films are skipped, not re-pinned) or runs them through the keeper-rule with reason `list_deleted`.
+  `deleteList(id)` logs `list_deleted` for every member *before* deleting the list row, then deletes
+  the list's mirrored Jellyfin collection if it had one (`makeCollection` + a recorded
+  `jellyfinCollectionId` — never leaves a stranded BoxSet behind), then either transitions its
+  Filmstrip-managed films straight to `kept` (if `List.permanence`; already-`kept` films are skipped,
+  not re-pinned) or runs them through the keeper-rule with reason `list_deleted`.
   All funnel through the same internal keeper-rule check, opening a `pending` `DeletionRequest` (and
   unmonitoring in Radarr) for eligible candidates. `approveDeletion(id)`/`keepDeletion(id)` resolve
   a pending request and transition state to `deleted`/`kept` (approve always deletes the file — no
@@ -148,7 +164,9 @@ Module layout:
   deep-links); `http.ts` holds `HttpError`/`asyncHandler`/`parseId`/`parseBody` + central error
   middleware; `auth.ts` has `requireAuth`/`requireAdmin` (read the session cookie); `routes/*` are
   one router per resource (`auth`, `settings`, `users`, `lists`, `movies`, `deletions`, `syncRuns`,
-  `sync`). `movies.ts`'s `GET /` and `GET /:id/history` both include the film's current **claims**
+  `sync`). `users.ts`'s `POST /:id/refresh-watched` (admin-only) calls `forceReconcileWatched` and
+  returns `{userId, filmsKnownWatched, listsReconciled}` — the "check watched now" button. `movies.ts`'s
+  `GET /` and `GET /:id/history` both include the film's current **claims**
   (`{listId, listLabel}[]`, DESIGN.md §5) alongside `sources`/history; `GET /:id/history` is a film's
   full `MovieEvent` log, oldest first, 404 if the id doesn't exist (DESIGN.md §4); `POST
   /:id/drop-keep` (admin-only, via `requireAdmin` applied to that one route) calls `dropKeepStatus`.
@@ -166,7 +184,9 @@ Module layout:
   `StateBadge`, so Movies and MovieHistory always agree on state labels/colors),
   `src/listFields.tsx` (shared per-list settings form; `permanence`/`unwatchedOnly`/`removeOnWatch`
   are mutually-exclusive checkboxes — picking one disables+clears the others), `src/pages/*` (Login,
-  Lists, Movies, MovieHistory, Users, Deletions, SyncHistory, Settings). Movies and MovieHistory both
+  Lists, Movies, MovieHistory, Users, Deletions, SyncHistory, Settings). Users has a per-row "Check
+  watched" button (`POST /users/:id/refresh-watched`) disabled when the user has neither a Letterboxd
+  username nor a Jellyfin id linked (nothing to check yet). Movies and MovieHistory both
   show a film's current claiming lists and, when `state === 'kept'` with zero claims, an admin-only
   "Drop keep status" button (`POST /movies/:id/drop-keep`). `/movies/:id` (MovieHistory) is the app's
   first param-based route, reached via a `Link` from a film's title on the Movies page — the first
@@ -181,6 +201,14 @@ Module layout:
   LOG_LEVEL, NODE_ENV) come from env; everything else comes from the DB via `resolveListConfig`. (The
   old strict env singleton was removed — `src/util/logger.ts` reads `process.env.LOG_LEVEL` directly.)
 - The Radarr `"letterboxd"` tag is intentional/global; keep it even though the project is now Filmstrip.
+- `src/scraper/http.ts`'s `fetchWithRetry` falls back to curl on a 403 (Node's fetch is fingerprinted
+  and blocked deterministically on some Letterboxd URLs, curl isn't — see the file's doc comment).
+  Confirmed live that curl itself can *also* come back 403 on Letterboxd's diary pages specifically
+  (intermittent, not a hard block — the same account fetches clean again later), so a curl 403 is
+  retried with the same backoff as a network error instead of being surfaced on the first attempt.
+  This was the actual root cause of `removeOnWatch` silently never firing in production: the diary
+  scrape (the only source `getDiaryWatchedDates`/`WatchedFilm.source: 'letterboxd_diary'` reads) was
+  403ing on effectively every daily refresh, so the cache stayed empty.
 - Tests mock the Prisma client (`../db/client`), the scraper, and the Radarr/Jellyfin modules — no
   real DB or network in unit tests. `prisma generate` must run before typecheck/tests (CI does
   this). `tsc --noEmit` only checks `src/**/*.ts` excluding `*.test.ts` (see tsconfig `exclude`) —

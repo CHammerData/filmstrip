@@ -1,5 +1,5 @@
 import { Fragment, FormEvent, useState } from 'react';
-import { get, post, patch, del, ApiError, User, JellyfinCandidates } from '../api';
+import { get, post, patch, del, ApiError, User, JellyfinCandidates, ForceReconcileWatchedResult } from '../api';
 import { useLoad } from '../useLoad';
 
 /** Turn a display name into a Radarr-safe tag suggestion (mirrors the server's deriveUniqueTag). */
@@ -15,6 +15,8 @@ function slugifyTag(name: string): string {
 export default function Users() {
   const users = useLoad<User[]>(() => get('/users'));
   const [editing, setEditing] = useState<number | null>(null);
+  const [busyId, setBusyId] = useState<number | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function remove(id: number) {
@@ -27,61 +29,98 @@ export default function Users() {
     }
   }
 
+  // Force this user's watched-state cache to refresh right now, then reconcile every removeOnWatch
+  // list they own against it -- rather than waiting for the next scheduled refresh tick (up to
+  // Settings.watchedRefreshIntervalMin) and that list's own next sync to notice a watch.
+  async function checkWatchedNow(id: number) {
+    setNotice(null);
+    setError(null);
+    setBusyId(id);
+    try {
+      const r = await post<ForceReconcileWatchedResult>(`/users/${id}/refresh-watched`);
+      setNotice(
+        `Watched state refreshed: ${r.filmsKnownWatched} film(s) known watched; ` +
+          `${r.listsReconciled.length} removeOnWatch list(s) reconciled.`
+      );
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Watched-state refresh failed.');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   return (
     <div>
       <h1>Users</h1>
+      {notice && <div className="panel" style={{ borderColor: 'var(--ok)' }}>{notice}</div>}
       {error && <div className="error">{error}</div>}
       <AddUser onAdded={users.reload} />
 
       {users.loading && <p className="muted">Loading…</p>}
       {users.error && <div className="error">{users.error}</div>}
       {users.data && (
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Radarr tag</th>
-              <th>Letterboxd</th>
-              <th>Jellyfin id</th>
-              <th>Enabled</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {users.data.map((u) => (
-              <Fragment key={u.id}>
-                <tr>
-                  <td>{u.name}</td>
-                  <td>{u.tag}</td>
-                  <td className="muted">{u.letterboxdUsername ?? '—'}</td>
-                  <td className="muted">{u.jellyfinUserId ?? '—'}</td>
-                  <td>{u.enabled ? 'yes' : 'no'}</td>
-                  <td className="actions">
-                    <button className="secondary" onClick={() => setEditing(editing === u.id ? null : u.id)}>
-                      Edit
-                    </button>
-                    <button className="danger" onClick={() => remove(u.id)}>
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-                {editing === u.id && (
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Radarr tag</th>
+                <th>Letterboxd</th>
+                <th>Jellyfin id</th>
+                <th>Enabled</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.data.map((u) => (
+                <Fragment key={u.id}>
                   <tr>
-                    <td colSpan={6}>
-                      <EditUser
-                        user={u}
-                        onSaved={() => {
-                          setEditing(null);
-                          users.reload();
-                        }}
-                      />
+                    <td>{u.name}</td>
+                    <td>{u.tag}</td>
+                    <td className="muted">{u.letterboxdUsername ?? '—'}</td>
+                    <td className="muted">{u.jellyfinUserId ?? '—'}</td>
+                    <td>{u.enabled ? 'yes' : 'no'}</td>
+                    <td>
+                      <div className="actions">
+                        <button
+                          className="secondary"
+                          onClick={() => checkWatchedNow(u.id)}
+                          disabled={busyId === u.id || (!u.letterboxdUsername && !u.jellyfinUserId)}
+                          title={
+                            u.letterboxdUsername || u.jellyfinUserId
+                              ? 'Refresh this user’s watched-state cache now and reconcile removeOnWatch lists'
+                              : 'Link a Letterboxd username or Jellyfin account first — there’s nothing to check yet'
+                          }
+                        >
+                          {busyId === u.id ? 'Checking…' : 'Check watched'}
+                        </button>
+                        <button className="secondary" onClick={() => setEditing(editing === u.id ? null : u.id)}>
+                          Edit
+                        </button>
+                        <button className="danger" onClick={() => remove(u.id)}>
+                          Delete
+                        </button>
+                      </div>
                     </td>
                   </tr>
-                )}
-              </Fragment>
-            ))}
-          </tbody>
-        </table>
+                  {editing === u.id && (
+                    <tr>
+                      <td colSpan={6}>
+                        <EditUser
+                          user={u}
+                          onSaved={() => {
+                            setEditing(null);
+                            users.reload();
+                          }}
+                        />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

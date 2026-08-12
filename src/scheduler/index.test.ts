@@ -7,6 +7,8 @@ const mockPrisma: any = {
   movieEvent: { create: jest.fn() },
   listMovie: { findMany: jest.fn(), findUnique: jest.fn(), update: jest.fn(), upsert: jest.fn() },
   list: { update: jest.fn(), findUnique: jest.fn(), findMany: jest.fn() },
+  user: { findUnique: jest.fn() },
+  watchedFilm: { count: jest.fn() },
   // Phase A/C wrap their writes in a transaction; running the callback against mockPrisma itself
   // keeps every mock (movie.upsert, movieEvent.create, ...) shared as-is (see reconcile's tests).
   $transaction: jest.fn((cb: (tx: unknown) => unknown) => cb(mockPrisma)),
@@ -29,6 +31,7 @@ jest.mock('../watched', () => ({
   __esModule: true,
   getOwnerWatchedTmdbIds: jest.fn(),
   getDiaryWatchedDates: jest.fn(),
+  refreshWatchedState: jest.fn(),
 }));
 jest.mock('../collections', () => ({ __esModule: true, syncCollection: jest.fn() }));
 jest.mock('../util/logger', () => ({
@@ -38,11 +41,11 @@ jest.mock('../util/logger', () => ({
   error: jest.fn(),
 }));
 
-import { syncList } from './index';
+import { syncList, forceReconcileWatched } from './index';
 import { fetchMoviesFromUrl } from '../scraper';
 import { upsertMovies } from '../api/radarr';
 import { reconcileList, reconcileWatched, applyPermanenceClaims } from '../reconcile';
-import { getOwnerWatchedTmdbIds, getDiaryWatchedDates } from '../watched';
+import { getOwnerWatchedTmdbIds, getDiaryWatchedDates, refreshWatchedState } from '../watched';
 import { syncCollection } from '../collections';
 import { ListWithUser } from '../db/config';
 
@@ -99,6 +102,7 @@ function makeList(overrides: Partial<List> = {}): ListWithUser {
     removeOnWatch: false,
     makeCollection: false,
     collectionNameOverride: null,
+    jellyfinCollectionId: null,
     lastSyncedAt: null,
     createdAt: now,
     updatedAt: now,
@@ -475,5 +479,76 @@ describe('syncList', () => {
     expect(mockPrisma.syncRun.update).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: 'failed' }) })
     );
+  });
+});
+
+describe('forceReconcileWatched', () => {
+  const settings = makeSettings();
+  const user: User = {
+    id: 1,
+    name: 'Chris',
+    tag: 'chris',
+    enabled: true,
+    letterboxdUsername: 'chrisfilms',
+    jellyfinUserId: null,
+    lastWatchedRefreshAt: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockPrisma.user.findUnique.mockResolvedValue(user);
+    mockPrisma.settings.findUnique.mockResolvedValue(settings);
+    mockPrisma.list.findMany.mockResolvedValue([]);
+    mockPrisma.watchedFilm.count.mockResolvedValue(0);
+    (refreshWatchedState as jest.Mock).mockResolvedValue(undefined);
+    (getDiaryWatchedDates as jest.Mock).mockResolvedValue(new Map());
+    (reconcileWatched as jest.Mock).mockResolvedValue(undefined);
+  });
+
+  it('throws if the user does not exist', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue(null);
+
+    await expect(forceReconcileWatched(999)).rejects.toThrow('User id=999 not found.');
+    expect(refreshWatchedState).not.toHaveBeenCalled();
+  });
+
+  it('throws if Settings is missing', async () => {
+    mockPrisma.settings.findUnique.mockResolvedValue(null);
+
+    await expect(forceReconcileWatched(1)).rejects.toThrow('Settings row (id=1) is missing.');
+    expect(refreshWatchedState).not.toHaveBeenCalled();
+  });
+
+  it('refreshes the cache, reconciles every enabled removeOnWatch list, and reports the result', async () => {
+    const listA = makeList({ id: 10, removeOnWatch: true });
+    const listB = makeList({ id: 11, removeOnWatch: true });
+    mockPrisma.list.findMany.mockResolvedValue([listA, listB]);
+    const diaryDates = new Map([[100, new Date('2026-01-01T00:00:00Z')]]);
+    (getDiaryWatchedDates as jest.Mock).mockResolvedValue(diaryDates);
+    mockPrisma.watchedFilm.count.mockResolvedValue(7);
+
+    const result = await forceReconcileWatched(1);
+
+    expect(refreshWatchedState).toHaveBeenCalledWith(user, settings);
+    expect(mockPrisma.list.findMany).toHaveBeenCalledWith({
+      where: { userId: 1, enabled: true, removeOnWatch: true },
+      include: { user: true },
+    });
+    expect(reconcileWatched).toHaveBeenCalledWith(listA, diaryDates);
+    expect(reconcileWatched).toHaveBeenCalledWith(listB, diaryDates);
+    expect(result).toEqual({ userId: 1, filmsKnownWatched: 7, listsReconciled: [10, 11] });
+  });
+
+  it('keeps going and omits a list whose reconcile fails', async () => {
+    const listA = makeList({ id: 10, removeOnWatch: true });
+    const listB = makeList({ id: 11, removeOnWatch: true });
+    mockPrisma.list.findMany.mockResolvedValue([listA, listB]);
+    (reconcileWatched as jest.Mock).mockRejectedValueOnce(new Error('boom')).mockResolvedValueOnce(undefined);
+
+    const result = await forceReconcileWatched(1);
+
+    expect(result.listsReconciled).toEqual([11]);
   });
 });

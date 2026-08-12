@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { Prisma } from '@prisma/client';
 import prisma from '../../db/client';
+import { forceReconcileWatched } from '../../scheduler';
 import { asyncHandler, parseBody, parseId, notFound, conflict } from '../http';
 
 // Same rule as /api/me: the username flows into a scrape URL, so reject path-bearing / oversized
@@ -70,6 +71,19 @@ export function usersRouter(): Router {
         if (isNotFound(e)) throw notFound(`User id=${id} not found.`);
         throw mapUserError(e, data.tag);
       }
+    })
+  );
+
+  // Admin-triggered "check watched now" (Users page): force this user's watched-state cache to
+  // refresh immediately, then reconcile every removeOnWatch list they own against it, rather than
+  // waiting for the next scheduled refresh tick + that list's own next sync.
+  router.post(
+    '/:id/refresh-watched',
+    asyncHandler(async (req, res) => {
+      const id = parseId(req.params.id);
+      const user = await prisma.user.findUnique({ where: { id } });
+      if (!user) throw notFound(`User id=${id} not found.`);
+      res.json(await forceReconcileWatched(id));
     })
   );
 

@@ -171,19 +171,59 @@ export async function getAllMovieProviderIds(
   }
 }
 
-/** Find an existing collection (BoxSet) by exact name, or null. */
-export async function findCollectionByName(client: AxiosInstance, name: string): Promise<{ id: string } | null> {
+/** Find an existing collection (BoxSet) by exact name, or null. Only used to adopt a collection
+ *  that predates `List.jellyfinCollectionId` tracking (or one an admin created by hand) -- once
+ *  adopted, syncCollection looks it up by id instead (see `getCollectionById`), since the name
+ *  itself can change. */
+export async function findCollectionByName(client: AxiosInstance, name: string): Promise<{ id: string; name: string } | null> {
   try {
     const response = await client.get('/Items', {
       params: { IncludeItemTypes: 'BoxSet', Recursive: true, Fields: 'Name' },
     });
     const items: JellyfinItem[] = response.data?.Items ?? [];
     const match = items.find((i) => i.Name === name);
-    return match ? { id: match.Id } : null;
+    return match ? { id: match.Id, name: match.Name } : null;
   } catch (error: any) {
     logger.error(`Error finding Jellyfin collection "${name}": ${error?.message ?? error}`);
     return null;
   }
+}
+
+/** Look up a collection (or any item) by its Jellyfin id. `GET /Items/{id}` isn't a valid route
+ *  (confirmed against a real server -- 400, not 404), so this filters the same `/Items` list
+ *  endpoint everything else here uses. A stored id that no longer resolves (the collection was
+ *  deleted directly in Jellyfin) simply comes back with an empty `Items` array, same as any other
+ *  fetch failure -- either way the caller's job is the same: stop trusting the stored id. */
+export async function getCollectionById(client: AxiosInstance, collectionId: string): Promise<{ id: string; name: string } | null> {
+  try {
+    const response = await client.get('/Items', { params: { Ids: collectionId, Fields: 'Name' } });
+    const items: JellyfinItem[] = response.data?.Items ?? [];
+    const match = items.find((i) => i.Id === collectionId);
+    return match ? { id: match.Id, name: match.Name } : null;
+  } catch (error: any) {
+    logger.error(`Error fetching Jellyfin collection ${collectionId}: ${error?.message ?? error}`);
+    return null;
+  }
+}
+
+/** Rename a collection in place. Jellyfin's item-update endpoint (`POST /Items/{itemId}`) replaces
+ *  the item's full metadata payload, so this fetches the current metadata first (via the same
+ *  `/Items` list endpoint `getCollectionById` uses -- `GET /Items/{id}` itself isn't a valid route)
+ *  and posts it back with only Name changed -- a partial body would blank out everything else
+ *  Jellyfin knows about the collection. */
+export async function renameCollection(client: AxiosInstance, collectionId: string, name: string): Promise<void> {
+  const response = await client.get('/Items', {
+    params: { Ids: collectionId, Fields: 'Overview,Genres,Tags,ProviderIds,DateCreated' },
+  });
+  const current = (response.data?.Items ?? [])[0];
+  if (!current) throw new Error(`Jellyfin collection ${collectionId} not found while renaming.`);
+  await client.post(`/Items/${collectionId}`, { ...current, Name: name });
+}
+
+/** Permanently delete a collection (BoxSet) from Jellyfin. Only removes the collection itself --
+ *  its member films are untouched. */
+export async function deleteCollection(client: AxiosInstance, collectionId: string): Promise<void> {
+  await client.delete(`/Items/${collectionId}`);
 }
 
 /** Create a new collection with the given initial members. */

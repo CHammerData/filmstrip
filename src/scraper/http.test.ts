@@ -72,13 +72,31 @@ describe('fetchWithRetry', () => {
     expect(args).toEqual(expect.arrayContaining(['-H', expect.stringContaining('Mozilla/5.0')]));
   });
 
-  it('surfaces whatever status curl itself got (e.g. still 403)', async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({ ok: false, status: 403 });
+  it('retries when curl itself also comes back 403, and succeeds on a later attempt', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 403 });
+    mockExecFile
+      .mockImplementationOnce((_file, _args, callback) => callback(null, { stdout: '403', stderr: '' }))
+      .mockImplementationOnce((_file, _args, callback) => callback(null, { stdout: '200', stderr: '' }));
+    mockReadFile.mockResolvedValueOnce('').mockResolvedValueOnce('<html>ok</html>');
+    mockRm.mockResolvedValue(undefined);
+
+    const res = await fetchWithRetry('https://letterboxd.com/x/diary/');
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('<html>ok</html>');
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(mockExecFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('surfaces the last 403 after curl fails on every attempt', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 403 });
     mockCurlResult(403, '');
 
-    const res = await fetchWithRetry('https://letterboxd.com/x/');
+    const res = await fetchWithRetry('https://letterboxd.com/x/diary/');
 
     expect(res.status).toBe(403);
+    expect(global.fetch).toHaveBeenCalledTimes(3); // MAX_ATTEMPTS
+    expect(mockExecFile).toHaveBeenCalledTimes(3); // MAX_ATTEMPTS
   });
 
   it('cleans up the temp file after reading it', async () => {

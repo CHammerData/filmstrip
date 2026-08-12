@@ -3,7 +3,7 @@ import { resolveListConfig, ListWithUser } from '../db/config';
 import { fetchMoviesFromUrl, LetterboxdMovie } from '../scraper';
 import { createRadarrClient, upsertMovies } from '../api/radarr';
 import { reconcileList, reconcileWatched, applyPermanenceClaims } from '../reconcile';
-import { getOwnerWatchedTmdbIds, getDiaryWatchedDates } from '../watched';
+import { getOwnerWatchedTmdbIds, getDiaryWatchedDates, refreshWatchedState } from '../watched';
 import { syncCollection } from '../collections';
 import { transitionMovie, logMovieEvent } from '../movieState';
 import logger from '../util/logger';
@@ -316,6 +316,51 @@ export async function syncDue(): Promise<SyncResult[]> {
     results.push(await syncList(list));
   }
   return results;
+}
+
+export interface ForceReconcileWatchedResult {
+  userId: number;
+  /** Total WatchedFilm rows now cached for this user, across all sources (diary/aggregate/Jellyfin). */
+  filmsKnownWatched: number;
+  /** ids of the enabled removeOnWatch lists this run actually reconciled. */
+  listsReconciled: number[];
+}
+
+/**
+ * Force one user's watched-state cache to refresh right now -- bypassing
+ * Settings.watchedRefreshIntervalMin's due-check (see `isDue` in src/watched/index.ts) -- then
+ * immediately reconcile every enabled removeOnWatch list they own against the now-current diary
+ * dates. This is the "check watched now" action a human triggers (e.g. the Users page), so they
+ * don't have to wait for the next scheduled refresh tick *and* that list's own next sync to
+ * notice a watch. A refresh failure throws (the admin needs to see it); one list's reconcile
+ * failing is logged and the rest still run, same as `syncList`'s own removeOnWatch step.
+ */
+export async function forceReconcileWatched(userId: number): Promise<ForceReconcileWatchedResult> {
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) throw new Error(`User id=${userId} not found.`);
+  const settings = await prisma.settings.findUnique({ where: { id: 1 } });
+  if (!settings) throw new Error('Settings row (id=1) is missing. Seed Settings before refreshing.');
+
+  await refreshWatchedState(user, settings);
+
+  const lists = await prisma.list.findMany({
+    where: { userId, enabled: true, removeOnWatch: true },
+    include: { user: true },
+  });
+  const diaryWatchedDates = await getDiaryWatchedDates(userId);
+
+  const listsReconciled: number[] = [];
+  for (const list of lists) {
+    try {
+      await reconcileWatched(list, diaryWatchedDates);
+      listsReconciled.push(list.id);
+    } catch (e: any) {
+      logger.error(`Force-reconcile-watched: failed for list id=${list.id}: ${e?.message ?? e}`);
+    }
+  }
+
+  const filmsKnownWatched = await prisma.watchedFilm.count({ where: { userId } });
+  return { userId, filmsKnownWatched, listsReconciled };
 }
 
 /** Default scheduler tick: how often we check for due lists (minutes). */

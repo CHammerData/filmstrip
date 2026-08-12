@@ -12,39 +12,41 @@ export default function SyncHistory() {
       {runs.data && runs.data.length === 0 && <p className="muted">No syncs yet.</p>}
 
       {runs.data && runs.data.length > 0 && (
-        <table>
-          <thead>
-            <tr>
-              <th>List</th>
-              <th>Status</th>
-              <th>Started</th>
-              <th>Found</th>
-              <th>Added</th>
-              <th>Skipped</th>
-              <th>Failed</th>
-              <th>Error</th>
-            </tr>
-          </thead>
-          <tbody>
-            {runs.data.map((r) => (
-              <tr key={r.id}>
-                <td>{r.listId}</td>
-                <td>
-                  <span className={`pill ${r.status === 'success' ? 'ok' : r.status === 'failed' ? 'fail' : ''}`}>
-                    {r.status}
-                    {r.dryRun ? ' (dry)' : ''}
-                  </span>
-                </td>
-                <td className="muted">{new Date(r.startedAt).toLocaleString()}</td>
-                <td>{r.moviesFound}</td>
-                <td>{r.moviesAdded}</td>
-                <td>{r.moviesSkipped}</td>
-                <td>{r.moviesFailed}</td>
-                <td className="muted">{r.error ?? ''}</td>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>List</th>
+                <th>Status</th>
+                <th>Started</th>
+                <th>Found</th>
+                <th>Added</th>
+                <th>Skipped</th>
+                <th>Failed</th>
+                <th>Error</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {runs.data.map((r) => (
+                <tr key={r.id}>
+                  <td>{r.listId}</td>
+                  <td>
+                    <span className={`pill ${r.status === 'success' ? 'ok' : r.status === 'failed' ? 'fail' : ''}`}>
+                      {r.status}
+                      {r.dryRun ? ' (dry)' : ''}
+                    </span>
+                  </td>
+                  <td className="muted">{new Date(r.startedAt).toLocaleString()}</td>
+                  <td>{r.moviesFound}</td>
+                  <td>{r.moviesAdded}</td>
+                  <td>{r.moviesSkipped}</td>
+                  <td>{r.moviesFailed}</td>
+                  <td className="muted">{r.error ?? ''}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

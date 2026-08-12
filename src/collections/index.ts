@@ -6,7 +6,9 @@ import {
   createJellyfinClient,
   getAllMovieProviderIds,
   findCollectionByName,
+  getCollectionById,
   createCollection,
+  renameCollection,
   getCollectionItemIds,
   addToCollection,
   removeFromCollection,
@@ -43,6 +45,12 @@ async function resolveJellyfinItemIds(client: AxiosInstance, movies: Movie[]): P
  * Maintain a Jellyfin collection (BoxSet) mirroring a list's current films (DESIGN.md §8).
  * Creates the collection on first use; otherwise diffs membership and adds/removes only what
  * changed. No-ops (with a warning) if Jellyfin isn't configured -- never blocks a Radarr sync.
+ *
+ * Tracks the collection by `List.jellyfinCollectionId` (identity), not by re-searching for
+ * `collectionName` every run -- searching by name meant editing a list's label or
+ * collectionNameOverride (which `collectionName` is derived from) made this stop finding the
+ * existing collection and create a duplicate, stranding the old one in Jellyfin under its old
+ * name. Once an id is known, a name mismatch is treated as a rename to apply, not a miss.
  */
 export async function syncCollection(list: ListWithUser, collectionName: string): Promise<void> {
   const settings = await prisma.settings.findUnique({ where: { id: 1 } });
@@ -61,12 +69,28 @@ export async function syncCollection(list: ListWithUser, collectionName: string)
   const itemIdByTmdb = await resolveJellyfinItemIds(client, movies);
   const itemIds = movies.map((m) => itemIdByTmdb.get(m.tmdbId)).filter((id): id is string => !!id);
 
-  const collection = await findCollectionByName(client, collectionName);
+  // Prefer the stored id; a miss (never created, or deleted directly in Jellyfin since last sync)
+  // falls back to a name search so a pre-existing collection -- from before jellyfinCollectionId
+  // was tracked, or one an admin created by hand -- gets adopted instead of duplicated.
+  let collection = list.jellyfinCollectionId ? await getCollectionById(client, list.jellyfinCollectionId) : null;
+  if (!collection) {
+    collection = await findCollectionByName(client, collectionName);
+  }
+
   if (!collection) {
     if (itemIds.length === 0) return;
-    await createCollection(client, collectionName, itemIds);
+    const created = await createCollection(client, collectionName, itemIds);
+    await prisma.list.update({ where: { id: list.id }, data: { jellyfinCollectionId: created.id } });
     logger.info(`Created Jellyfin collection "${collectionName}" with ${itemIds.length} film(s).`);
     return;
+  }
+
+  if (collection.id !== list.jellyfinCollectionId) {
+    await prisma.list.update({ where: { id: list.id }, data: { jellyfinCollectionId: collection.id } });
+  }
+  if (collection.name !== collectionName) {
+    await renameCollection(client, collection.id, collectionName);
+    logger.info(`Renamed Jellyfin collection "${collection.name}" -> "${collectionName}".`);
   }
 
   const current = await getCollectionItemIds(client, collection.id);

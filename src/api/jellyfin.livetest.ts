@@ -18,7 +18,10 @@ import {
   getWatchedTmdbIds,
   getAllMovieProviderIds,
   findCollectionByName,
+  getCollectionById,
   createCollection,
+  renameCollection,
+  deleteCollection,
   getCollectionItemIds,
   addToCollection,
   removeFromCollection,
@@ -75,7 +78,12 @@ const COLLECTION_NAME = 'Filmstrip Live Test Collection';
 
   it('finds the collection by name afterward', async () => {
     const found = await findCollectionByName(client, COLLECTION_NAME);
-    expect(found).toEqual({ id: collectionId });
+    expect(found).toEqual({ id: collectionId, name: COLLECTION_NAME });
+  });
+
+  it('looks up the collection by id', async () => {
+    const found = await getCollectionById(client, collectionId);
+    expect(found).toEqual({ id: collectionId, name: COLLECTION_NAME });
   });
 
   it('reports empty membership for a freshly-created collection', async () => {
@@ -89,5 +97,20 @@ const COLLECTION_NAME = 'Filmstrip Live Test Collection';
 
     const items = await getCollectionItemIds(client, collectionId);
     expect(items).toEqual([]);
+  });
+
+  it('renames the collection in place, keeping its id', async () => {
+    const renamed = `${COLLECTION_NAME} (renamed)`;
+    await renameCollection(client, collectionId, renamed);
+
+    const found = await getCollectionById(client, collectionId);
+    expect(found).toEqual({ id: collectionId, name: renamed });
+  });
+
+  it('deletes the collection', async () => {
+    await deleteCollection(client, collectionId);
+
+    const found = await getCollectionById(client, collectionId);
+    expect(found).toBeNull();
   });
 });

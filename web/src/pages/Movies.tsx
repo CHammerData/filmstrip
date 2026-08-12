@@ -117,87 +117,91 @@ export default function Movies() {
       {movies.data && filtered.length === 0 && <p className="muted">No matching films.</p>}
 
       {filtered.length > 0 && (
-        <table>
-          <thead>
-            <tr>
-              <th>Film</th>
-              <th>Added by lists</th>
-              <th>Claimed by</th>
-              <th>Owner(s)</th>
-              <th>Radarr status</th>
-              <th>State</th>
-              <th>On disk</th>
-              {isAdmin && <th></th>}
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((m) => {
-              const owners = [...new Set(m.sources.map((s) => s.ownerName))];
-              const canDropKeep = m.state === 'kept' && m.claims.length === 0;
-              return (
-                <tr key={m.id}>
-                  <td>
-                    <Link to={`/movies/${m.id}`}>
-                      {m.title}
-                      {m.year ? ` (${m.year})` : ''}
-                    </Link>
-                    <div className="muted" style={{ fontSize: 12 }}>
-                      tmdb {m.tmdbId}
-                    </div>
-                  </td>
-                  <td>
-                    {m.sources.length === 0 ? (
-                      <span className="muted">—</span>
-                    ) : (
-                      <span style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                        {m.sources.map((s) => (
-                          <span
-                            key={s.listId}
-                            className="badge"
-                            style={{ fontSize: 11 }}
-                            title={s.listType}
-                          >
-                            {s.listLabel}
-                          </span>
-                        ))}
-                      </span>
-                    )}
-                  </td>
-                  <td>
-                    {m.claims.length === 0 ? (
-                      <span className="muted">none</span>
-                    ) : (
-                      <span style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                        {m.claims.map((c) => (
-                          <span key={c.listId} className="badge" style={{ fontSize: 11 }}>
-                            {c.listLabel}
-                          </span>
-                        ))}
-                      </span>
-                    )}
-                  </td>
-                  <td className="muted">{owners.length ? owners.join(', ') : '—'}</td>
-                  <td>
-                    <StatusBadge status={m.radarrStatus} />
-                  </td>
-                  <td>
-                    <StateBadge state={m.state} />
-                  </td>
-                  <td className="muted">{m.radarr ? formatSize(m.radarr.sizeOnDisk) : '—'}</td>
-                  {isAdmin && (
-                    <td className="actions">
-                      {canDropKeep && (
-                        <button disabled={busyId === m.id} onClick={() => dropKeep(m.id)}>
-                          Drop keep status
-                        </button>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Film</th>
+                <th>Added by lists</th>
+                <th>Claimed by</th>
+                <th>Owner(s)</th>
+                <th>Radarr status</th>
+                <th>State</th>
+                <th>On disk</th>
+                {isAdmin && <th></th>}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((m) => {
+                const owners = [...new Set(m.sources.map((s) => s.ownerName))];
+                const canDropKeep = m.state === 'kept' && m.claims.length === 0;
+                return (
+                  <tr key={m.id}>
+                    <td>
+                      <Link to={`/movies/${m.id}`}>
+                        {m.title}
+                        {m.year ? ` (${m.year})` : ''}
+                      </Link>
+                      <div className="muted" style={{ fontSize: 12 }}>
+                        tmdb {m.tmdbId}
+                      </div>
+                    </td>
+                    <td style={{ maxWidth: 220 }}>
+                      {m.sources.length === 0 ? (
+                        <span className="muted">—</span>
+                      ) : (
+                        <span style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                          {m.sources.map((s) => (
+                            <span
+                              key={s.listId}
+                              className="badge"
+                              style={{ fontSize: 11 }}
+                              title={s.listType}
+                            >
+                              {s.listLabel}
+                            </span>
+                          ))}
+                        </span>
                       )}
                     </td>
-                  )}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                    <td style={{ maxWidth: 220 }}>
+                      {m.claims.length === 0 ? (
+                        <span className="muted">none</span>
+                      ) : (
+                        <span style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                          {m.claims.map((c) => (
+                            <span key={c.listId} className="badge" style={{ fontSize: 11 }}>
+                              {c.listLabel}
+                            </span>
+                          ))}
+                        </span>
+                      )}
+                    </td>
+                    <td className="muted">{owners.length ? owners.join(', ') : '—'}</td>
+                    <td>
+                      <StatusBadge status={m.radarrStatus} />
+                    </td>
+                    <td>
+                      <StateBadge state={m.state} />
+                    </td>
+                    <td className="muted">{m.radarr ? formatSize(m.radarr.sizeOnDisk) : '—'}</td>
+                    {isAdmin && (
+                      <td>
+                        {canDropKeep && (
+                          <div className="actions">
+                            <button disabled={busyId === m.id} onClick={() => dropKeep(m.id)}>
+                              Drop keep status
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

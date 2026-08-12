@@ -50,43 +50,47 @@ export default function Deletions() {
       {reqs.data && reqs.data.length === 0 && <p className="muted">Nothing {status}.</p>}
 
       {reqs.data && reqs.data.length > 0 && (
-        <table>
-          <thead>
-            <tr>
-              <th>Film</th>
-              <th>Reason</th>
-              <th>Triggered by</th>
-              <th>Since</th>
-              {status === 'pending' && <th></th>}
-            </tr>
-          </thead>
-          <tbody>
-            {reqs.data.map((r) => (
-              <tr key={r.id}>
-                <td>
-                  {r.movie.title}
-                  {r.movie.year ? ` (${r.movie.year})` : ''}
-                  <div className="muted" style={{ fontSize: 12 }}>
-                    tmdb {r.movie.tmdbId}
-                  </div>
-                </td>
-                <td>{r.reason}</td>
-                <td className="muted">{r.triggeredByList?.label ?? '—'}</td>
-                <td className="muted">{new Date(r.createdAt).toLocaleString()}</td>
-                {status === 'pending' && (
-                  <td className="actions">
-                    <button disabled={busyId === r.id} onClick={() => resolve(r.id, 'approve')}>
-                      Approve
-                    </button>
-                    <button className="secondary" disabled={busyId === r.id} onClick={() => resolve(r.id, 'keep')}>
-                      Keep
-                    </button>
-                  </td>
-                )}
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Film</th>
+                <th>Reason</th>
+                <th>Triggered by</th>
+                <th>Since</th>
+                {status === 'pending' && <th></th>}
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {reqs.data.map((r) => (
+                <tr key={r.id}>
+                  <td>
+                    {r.movie.title}
+                    {r.movie.year ? ` (${r.movie.year})` : ''}
+                    <div className="muted" style={{ fontSize: 12 }}>
+                      tmdb {r.movie.tmdbId}
+                    </div>
+                  </td>
+                  <td>{r.reason}</td>
+                  <td className="muted">{r.triggeredByList?.label ?? '—'}</td>
+                  <td className="muted">{new Date(r.createdAt).toLocaleString()}</td>
+                  {status === 'pending' && (
+                    <td>
+                      <div className="actions">
+                        <button disabled={busyId === r.id} onClick={() => resolve(r.id, 'approve')}>
+                          Approve
+                        </button>
+                        <button className="secondary" disabled={busyId === r.id} onClick={() => resolve(r.id, 'keep')}>
+                          Keep
+                        </button>
+                      </div>
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

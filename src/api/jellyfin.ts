@@ -189,27 +189,35 @@ export async function findCollectionByName(client: AxiosInstance, name: string):
   }
 }
 
-/** Look up a collection (or any item) by its Jellyfin id. Returns null both on a genuine 404 (the
- *  collection was deleted directly in Jellyfin since Filmstrip last saw it) and on any other
+/** Look up a collection (or any item) by its Jellyfin id. `GET /Items/{id}` isn't a valid route
+ *  (confirmed against a real server -- 400, not 404), so this filters the same `/Items` list
+ *  endpoint everything else here uses. A stored id that no longer resolves (the collection was
+ *  deleted directly in Jellyfin) simply comes back with an empty `Items` array, same as any other
  *  fetch failure -- either way the caller's job is the same: stop trusting the stored id. */
 export async function getCollectionById(client: AxiosInstance, collectionId: string): Promise<{ id: string; name: string } | null> {
   try {
-    const response = await client.get(`/Items/${collectionId}`);
-    return { id: response.data.Id, name: response.data.Name };
+    const response = await client.get('/Items', { params: { Ids: collectionId, Fields: 'Name' } });
+    const items: JellyfinItem[] = response.data?.Items ?? [];
+    const match = items.find((i) => i.Id === collectionId);
+    return match ? { id: match.Id, name: match.Name } : null;
   } catch (error: any) {
-    if (error?.response?.status !== 404) {
-      logger.error(`Error fetching Jellyfin collection ${collectionId}: ${error?.message ?? error}`);
-    }
+    logger.error(`Error fetching Jellyfin collection ${collectionId}: ${error?.message ?? error}`);
     return null;
   }
 }
 
-/** Rename a collection in place. Jellyfin's item-update endpoint replaces the item's full metadata
- *  payload, so this fetches the current metadata first and posts it back with only Name changed --
- *  a partial body would blank out everything else Jellyfin knows about the collection. */
+/** Rename a collection in place. Jellyfin's item-update endpoint (`POST /Items/{itemId}`) replaces
+ *  the item's full metadata payload, so this fetches the current metadata first (via the same
+ *  `/Items` list endpoint `getCollectionById` uses -- `GET /Items/{id}` itself isn't a valid route)
+ *  and posts it back with only Name changed -- a partial body would blank out everything else
+ *  Jellyfin knows about the collection. */
 export async function renameCollection(client: AxiosInstance, collectionId: string, name: string): Promise<void> {
-  const current = await client.get(`/Items/${collectionId}`);
-  await client.post(`/Items/${collectionId}`, { ...current.data, Name: name });
+  const response = await client.get('/Items', {
+    params: { Ids: collectionId, Fields: 'Overview,Genres,Tags,ProviderIds,DateCreated' },
+  });
+  const current = (response.data?.Items ?? [])[0];
+  if (!current) throw new Error(`Jellyfin collection ${collectionId} not found while renaming.`);
+  await client.post(`/Items/${collectionId}`, { ...current, Name: name });
 }
 
 /** Permanently delete a collection (BoxSet) from Jellyfin. Only removes the collection itself --

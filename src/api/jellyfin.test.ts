@@ -184,16 +184,16 @@ describe('jellyfin API', () => {
 
   describe('getCollectionById', () => {
     it('returns the item id and name', async () => {
-      mockAxiosInstance.get.mockResolvedValueOnce({ data: { Id: 'col-1', Name: 'Horror Picks' } });
+      mockAxiosInstance.get.mockResolvedValueOnce({ data: { Items: [{ Id: 'col-1', Name: 'Horror Picks' }] } });
 
       const result = await getCollectionById(client, 'col-1');
 
       expect(result).toEqual({ id: 'col-1', name: 'Horror Picks' });
-      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/Items/col-1');
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/Items', { params: { Ids: 'col-1', Fields: 'Name' } });
     });
 
-    it('returns null on a 404 (deleted directly in Jellyfin)', async () => {
-      mockAxiosInstance.get.mockRejectedValueOnce({ response: { status: 404 } });
+    it('returns null when the id no longer resolves (deleted directly in Jellyfin)', async () => {
+      mockAxiosInstance.get.mockResolvedValueOnce({ data: { Items: [] } });
 
       const result = await getCollectionById(client, 'col-1');
 
@@ -224,17 +224,28 @@ describe('jellyfin API', () => {
 
   describe('renameCollection', () => {
     it('fetches current metadata and posts it back with only Name changed', async () => {
-      mockAxiosInstance.get.mockResolvedValueOnce({ data: { Id: 'col-1', Name: 'Old Name', Overview: 'kept as-is' } });
+      mockAxiosInstance.get.mockResolvedValueOnce({
+        data: { Items: [{ Id: 'col-1', Name: 'Old Name', Overview: 'kept as-is' }] },
+      });
       mockAxiosInstance.post.mockResolvedValueOnce({});
 
       await renameCollection(client, 'col-1', 'New Name');
 
-      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/Items/col-1');
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/Items', {
+        params: { Ids: 'col-1', Fields: 'Overview,Genres,Tags,ProviderIds,DateCreated' },
+      });
       expect(mockAxiosInstance.post).toHaveBeenCalledWith('/Items/col-1', {
         Id: 'col-1',
         Name: 'New Name',
         Overview: 'kept as-is',
       });
+    });
+
+    it('throws if the collection no longer resolves', async () => {
+      mockAxiosInstance.get.mockResolvedValueOnce({ data: { Items: [] } });
+
+      await expect(renameCollection(client, 'col-1', 'New Name')).rejects.toThrow(/not found/);
+      expect(mockAxiosInstance.post).not.toHaveBeenCalled();
     });
   });
 

@@ -203,12 +203,16 @@ Module layout:
 - The Radarr `"letterboxd"` tag is intentional/global; keep it even though the project is now Filmstrip.
 - `src/scraper/http.ts`'s `fetchWithRetry` falls back to curl on a 403 (Node's fetch is fingerprinted
   and blocked deterministically on some Letterboxd URLs, curl isn't — see the file's doc comment).
-  Confirmed live that curl itself can *also* come back 403 on Letterboxd's diary pages specifically
-  (intermittent, not a hard block — the same account fetches clean again later), so a curl 403 is
-  retried with the same backoff as a network error instead of being surfaced on the first attempt.
   This was the actual root cause of `removeOnWatch` silently never firing in production: the diary
   scrape (the only source `getDiaryWatchedDates`/`WatchedFilm.source: 'letterboxd_diary'` reads) was
-  403ing on effectively every daily refresh, so the cache stayed empty.
+  403ing on effectively every daily refresh, so the cache stayed empty. Confirmed live (comparing a
+  manual, isolated `curl` call against the app's own request pattern from inside the same container)
+  that curl itself can also come back 403 on Letterboxd's diary pages specifically — but a lone curl
+  call succeeded reliably every time, while `fetch`-then-curl repeated 3x in ~1.5s failed every time.
+  So once Node's `fetch` has 403'd once in a call, it is *not* retried on later attempts — it appears
+  to actively re-trigger the block that then also catches the curl call riding right behind it — and
+  a curl 403 is retried curl-only with backoff (`BASE_DELAY_MS` = 1500ms) instead of being surfaced
+  on the first attempt or paired with another doomed `fetch`.
 - Tests mock the Prisma client (`../db/client`), the scraper, and the Radarr/Jellyfin modules — no
   real DB or network in unit tests. `prisma generate` must run before typecheck/tests (CI does
   this). `tsc --noEmit` only checks `src/**/*.ts` excluding `*.test.ts` (see tsconfig `exclude`) —

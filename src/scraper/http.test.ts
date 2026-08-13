@@ -1,4 +1,4 @@
-import { fetchWithRetry } from './http';
+import { fetchWithRetry, resetNodeFetchBlockCache } from './http';
 
 jest.mock('../util/logger', () => ({ debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 
@@ -23,7 +23,12 @@ function mockCurlResult(status: number, body: string) {
   mockRm.mockResolvedValue(undefined);
 }
 
-beforeEach(() => jest.clearAllMocks());
+beforeEach(() => {
+  jest.clearAllMocks();
+  // The "this host blocks Node's fetch" flag is module state by design -- clear it so tests don't
+  // inherit each other's learned blocks.
+  resetNodeFetchBlockCache();
+});
 
 describe('fetchWithRetry', () => {
   it('sends a browser User-Agent', async () => {
@@ -100,6 +105,43 @@ describe('fetchWithRetry', () => {
     expect(global.fetch).toHaveBeenCalledTimes(1); // blocked once, never retried
     expect(mockExecFile).toHaveBeenCalledTimes(3); // MAX_ATTEMPTS, curl-only after the first 403
   });
+
+  it('stops probing fetch for a host once it has 403d, on every later call', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 403 });
+    mockCurlResult(200, '<html>ok</html>');
+
+    await fetchWithRetry('https://letterboxd.com/x/films/');
+    await fetchWithRetry('https://letterboxd.com/x/films/page/2/');
+    await fetchWithRetry('https://letterboxd.com/film/heat/');
+
+    // A scrape runs hundreds of these concurrently; re-probing fetch each time keeps the block hot
+    // and takes the curl calls riding behind it down too.
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(mockExecFile).toHaveBeenCalledTimes(3);
+  });
+
+  it('still probes fetch for a host that has not been blocked', async () => {
+    (global.fetch as jest.Mock)
+      .mockResolvedValueOnce({ ok: false, status: 403 })
+      .mockResolvedValueOnce({ ok: true, status: 200 });
+    mockCurlResult(200, '<html>ok</html>');
+
+    await fetchWithRetry('https://letterboxd.com/x/films/');
+    const res = await fetchWithRetry('https://example.com/thing/');
+
+    expect(res.status).toBe(200);
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(mockExecFile).toHaveBeenCalledTimes(1); // only the letterboxd.com call fell back
+  });
+
+  it('reports a missing curl binary instead of a bare 403', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 403 });
+    const enoent = Object.assign(new Error('spawn curl ENOENT'), { code: 'ENOENT' });
+    mockExecFile.mockImplementation((_file, _args, callback) => callback(enoent));
+    mockRm.mockResolvedValue(undefined);
+
+    await expect(fetchWithRetry('https://letterboxd.com/x/')).rejects.toThrow('no `curl` binary on PATH');
+  }, 10000); // exhausts all 3 attempts, so it sits through the full backoff
 
   it('cleans up the temp file after reading it', async () => {
     (global.fetch as jest.Mock).mockResolvedValueOnce({ ok: false, status: 403 });

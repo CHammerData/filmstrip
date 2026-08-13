@@ -23,8 +23,53 @@ export const SCRAPE_CONCURRENCY = 6;
 const MAX_ATTEMPTS = 3;
 const BASE_DELAY_MS = 1500;
 const CURL_TIMEOUT_SECONDS = 20;
+/** How long a host stays marked as blocking Node's HTTP stack before `fetch` is probed again. */
+const BLOCK_TTL_MS = 30 * 60 * 1000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Hosts known to 403 Node's HTTP stack, mapped to when that knowledge expires.
+ *
+ * This is deliberately module state, not per-call: a sync resolves hundreds of film pages through
+ * `resolveMoviesTolerant`/`resolveDiaryRowsTolerant` at SCRAPE_CONCURRENCY, and if each one starts
+ * by probing `fetch` again, the whole scrape becomes a continuous stream of blocked fetches -- the
+ * exact pattern that re-triggers the block and takes the curl calls riding behind them down with it
+ * (see `fetchWithRetry`). One host-wide probe, then curl for everything until the TTL lapses.
+ */
+const blockedHosts = new Map<string, number>();
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
+function isNodeFetchBlocked(host: string): boolean {
+  const blockedUntil = blockedHosts.get(host);
+  if (blockedUntil === undefined) return false;
+  if (blockedUntil > Date.now()) return true;
+  blockedHosts.delete(host);
+  return false;
+}
+
+function markNodeFetchBlocked(host: string): void {
+  // Warn on the transition only -- once per host per TTL, rather than once per film page.
+  if (!isNodeFetchBlocked(host)) {
+    logger.warn(
+      `${host} returned 403 to Node's HTTP stack; routing scrape requests through the curl fallback ` +
+        `for the next ${Math.round(BLOCK_TTL_MS / 60000)} minutes.`
+    );
+  }
+  blockedHosts.set(host, Date.now() + BLOCK_TTL_MS);
+}
+
+/** Clear the learned block state. Exported for tests -- module state would otherwise leak across them. */
+export function resetNodeFetchBlockCache(): void {
+  blockedHosts.clear();
+}
 
 /**
  * Shell out to the system `curl` binary for one request. Confirmed directly (bypassing this app
@@ -59,6 +104,15 @@ async function fetchWithCurl(url: string): Promise<Response> {
     const status = parseInt(stdout.trim(), 10);
     const body = await fs.readFile(tmpFile, 'utf-8');
     return new Response(body, { status, statusText: String(status) });
+  } catch (e) {
+    // Say which leg failed and why. A bare ENOENT or exit-28 bubbling up as "fetch failed" is the
+    // difference between "Cloudflare is blocking us" and "curl isn't installed in this image".
+    const err = e as NodeJS.ErrnoException & { code?: string | number; stderr?: string };
+    if (err.code === 'ENOENT') {
+      throw new Error(`curl fallback unavailable for ${url}: no \`curl\` binary on PATH.`);
+    }
+    const detail = [err.stderr?.trim(), err.message].filter(Boolean).join(' -- ');
+    throw new Error(`curl fallback failed for ${url} (exit ${err.code}): ${detail}`);
   } finally {
     await fs.rm(tmpFile, { force: true });
   }
@@ -72,30 +126,31 @@ async function fetchWithCurl(url: string): Promise<Response> {
  * specifically (see `fetchWithCurl`), so retrying via `fetch` again wouldn't help -- falls back to
  * curl on the same attempt instead of burning a retry on it.
  *
- * Once `fetch` has 403'd once in a call, it is NOT tried again on later attempts -- confirmed live
+ * Once `fetch` has 403'd for a host, it is NOT tried again for that host until the block TTL lapses
+ * -- not just for the rest of this call, but process-wide (see `blockedHosts`). Confirmed live
  * (Letterboxd's diary pages) that repeating it doesn't just waste a request, it appears to actively
  * re-trigger the block that then also catches the very curl call riding right behind it: a lone,
  * cold curl request to the same URL succeeds reliably, but fetch-then-curl repeated 3x in ~1.5s
- * failed every time in production. So a 403 from curl itself is retried curl-only, with backoff,
- * instead of pairing it with another doomed `fetch` call. Every other status (404, etc.) still
- * surfaces immediately with the caller's own message.
+ * failed every time in production. A scrape issues that pair once per film page across hundreds of
+ * pages, so scoping the knowledge per-call was enough to keep the block permanently hot. A 403 from
+ * curl itself is retried curl-only, with backoff. Every other status (404, etc.) still surfaces
+ * immediately with the caller's own message.
  */
 export async function fetchWithRetry(url: string): Promise<Response> {
+  const host = hostOf(url);
   let lastErr: unknown;
   let lastResponse: Response | undefined;
-  let nodeFetchBlocked = false;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
       let response: Response;
-      if (!nodeFetchBlocked) {
+      if (isNodeFetchBlocked(host)) {
+        response = await fetchWithCurl(url);
+      } else {
         response = await fetch(url, { headers: SCRAPER_HEADERS });
         if (response.status === 403) {
-          nodeFetchBlocked = true;
-          logger.debug(`Fetch ${url} got 403 (Node's HTTP stack is blocked here); falling back to curl.`);
+          markNodeFetchBlocked(host);
           response = await fetchWithCurl(url);
         }
-      } else {
-        response = await fetchWithCurl(url);
       }
       if (response.status !== 403) return response;
       lastResponse = response; // curl got 403 too -- fall through to the retry/backoff below
@@ -112,6 +167,20 @@ export async function fetchWithRetry(url: string): Promise<Response> {
       await sleep(delay);
     }
   }
-  if (lastResponse) return lastResponse;
+  // Warn, not debug: this is the failure the caller turns into a bare "Failed to fetch ...: 403",
+  // and it's the only place that can say whether curl ran, what it returned, and what it threw.
+  if (lastResponse) {
+    logger.warn(
+      `Giving up on ${url} after ${MAX_ATTEMPTS} attempts: curl fallback also returned ` +
+        `${lastResponse.status}` +
+        (lastErr ? `; last curl error: ${lastErr instanceof Error ? lastErr.message : lastErr}` : '') +
+        '.'
+    );
+    return lastResponse;
+  }
+  logger.warn(
+    `Giving up on ${url} after ${MAX_ATTEMPTS} attempts: ` +
+      `${lastErr instanceof Error ? lastErr.message : lastErr}`
+  );
   throw lastErr;
 }

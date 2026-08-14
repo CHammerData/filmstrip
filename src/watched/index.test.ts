@@ -60,6 +60,7 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
     radarrApiKey: 'key',
     jellyfinUrl: null,
     jellyfinApiKey: null,
+    flaresolverrUrl: null,
     defaultQualityProfile: 'HD-1080p',
     defaultRootFolderId: null,
     defaultMinimumAvailability: 'released',
@@ -93,7 +94,9 @@ describe('getOwnerWatchedTmdbIds', () => {
 
     const result = await getOwnerWatchedTmdbIds(makeUser({ letterboxdUsername: 'chris' }), makeSettings());
 
-    expect(fetchMoviesFromUrl).toHaveBeenCalledWith('https://letterboxd.com/chris/films/');
+    expect(fetchMoviesFromUrl).toHaveBeenCalledWith('https://letterboxd.com/chris/films/', undefined, undefined, {
+      flaresolverrUrl: null,
+    });
     expect(result).toEqual(new Set([100]));
   });
 

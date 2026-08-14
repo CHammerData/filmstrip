@@ -91,6 +91,7 @@ export interface Settings {
   radarrApiKey: string | null;
   jellyfinUrl: string | null;
   jellyfinApiKey: string | null;
+  flaresolverrUrl: string | null;
   defaultQualityProfile: string | null;
   defaultMinimumAvailability: string;
   defaultCheckIntervalMin: number;

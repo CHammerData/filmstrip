@@ -8,10 +8,15 @@ import logger from '../util/logger';
 /** This user's Letterboxd watched set, scraped from their public /films/ page. Empty (not
  *  thrown) if the username isn't set or the scrape fails -- watched-state is supplementary,
  *  never something that should block a list's Radarr sync. */
-async function getLetterboxdWatchedTmdbIds(user: User): Promise<Set<number>> {
+async function getLetterboxdWatchedTmdbIds(user: User, settings: Settings): Promise<Set<number>> {
   if (!user.letterboxdUsername) return new Set();
   try {
-    const movies = await fetchMoviesFromUrl(`https://letterboxd.com/${user.letterboxdUsername}/films/`);
+    const movies = await fetchMoviesFromUrl(
+      `https://letterboxd.com/${user.letterboxdUsername}/films/`,
+      undefined,
+      undefined,
+      { flaresolverrUrl: settings.flaresolverrUrl }
+    );
     return new Set(
       movies
         .filter((m: LetterboxdMovie) => m.tmdbId)
@@ -25,10 +30,12 @@ async function getLetterboxdWatchedTmdbIds(user: User): Promise<Set<number>> {
 
 /** This user's Letterboxd diary -- the only source with a real per-film watched date. Empty (not
  *  thrown) if the username isn't set or the scrape fails, same as the aggregate scrape above. */
-async function getLetterboxdDiaryEntries(user: User): Promise<DiaryEntry[]> {
+async function getLetterboxdDiaryEntries(user: User, settings: Settings): Promise<DiaryEntry[]> {
   if (!user.letterboxdUsername) return [];
   try {
-    return await new DiaryScraper(user.letterboxdUsername).getEntries();
+    return await new DiaryScraper(user.letterboxdUsername, {
+      flaresolverrUrl: settings.flaresolverrUrl,
+    }).getEntries();
   } catch (e: any) {
     logger.error(`Error scraping Letterboxd diary for "${user.letterboxdUsername}": ${e?.message ?? e}`);
     return [];
@@ -51,7 +58,7 @@ async function getJellyfinWatchedTmdbIdsForUser(user: User, settings: Settings):
  */
 export async function getOwnerWatchedTmdbIds(user: User, settings: Settings): Promise<Set<number>> {
   const [letterboxd, jellyfin] = await Promise.all([
-    getLetterboxdWatchedTmdbIds(user),
+    getLetterboxdWatchedTmdbIds(user, settings),
     getJellyfinWatchedTmdbIdsForUser(user, settings),
   ]);
   return new Set([...letterboxd, ...jellyfin]);
@@ -91,8 +98,8 @@ export async function getDiaryWatchedDates(userId: number): Promise<Map<number, 
  */
 export async function refreshWatchedState(user: User, settings: Settings): Promise<void> {
   const jellyfinPromise = getJellyfinWatchedTmdbIdsForUser(user, settings);
-  const diaryEntries = await getLetterboxdDiaryEntries(user);
-  const aggregateIds = await getLetterboxdWatchedTmdbIds(user);
+  const diaryEntries = await getLetterboxdDiaryEntries(user, settings);
+  const aggregateIds = await getLetterboxdWatchedTmdbIds(user, settings);
   const jellyfinIds = await jellyfinPromise;
 
   const byTmdbId = new Map<number, { watchedAt: Date | null; source: string }>();

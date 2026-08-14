@@ -285,6 +285,13 @@ Docker Hub's description API rejects the personal access token used for image pu
   them on the Settings page (gui) or via `RADARR_API_URL` / `RADARR_API_KEY` (headless).
 - **Quality profile errors** — the name must match Radarr exactly (case-sensitive).
 - **No movies found** — confirm the Letterboxd list is public and the URL matches a supported shape.
+- **Only the first ~72 films of a list sync** — Letterboxd serves page 1 of a list to any client but
+  gates page 2 onward on the request coming from a real browser, so the scrape stops where the 403s
+  start. Set **FlareSolverr** on the Settings page (e.g. `http://flaresolverr:8191`) — it's the only
+  rung that clears the check. The log says so directly: `Giving up on <url> ... set a FlareSolverr
+  URL in Settings to scrape past page 1`. If it's already set and you see `FlareSolverr was also
+  refused (403)`, a real browser was turned away too and the block has moved beyond client
+  fingerprinting.
 
 ## License
 

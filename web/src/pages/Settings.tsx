@@ -36,6 +36,7 @@ function SettingsForm({ initial, onSaved }: { initial: SettingsType; onSaved: ()
         radarrApiKey: form.radarrApiKey || null,
         jellyfinUrl: form.jellyfinUrl || null,
         jellyfinApiKey: form.jellyfinApiKey || null,
+        flaresolverrUrl: form.flaresolverrUrl || null,
         defaultQualityProfile: form.defaultQualityProfile || null,
         defaultMinimumAvailability: form.defaultMinimumAvailability,
         defaultCheckIntervalMin: form.defaultCheckIntervalMin,
@@ -75,6 +76,23 @@ function SettingsForm({ initial, onSaved }: { initial: SettingsType; onSaved: ()
         <label>
           <span>API key</span>
           <input value={form.jellyfinApiKey ?? ''} onChange={(e) => set('jellyfinApiKey', e.target.value)} />
+        </label>
+      </div>
+
+      <h2>FlareSolverr</h2>
+      <p className="muted">
+        Optional. Letterboxd serves the first page of a list to anything, but gates page 2 onward on
+        the request coming from a real browser — so without this, multi-page lists stop at page 1.
+        FlareSolverr clears that check. Leave blank if you don't run it.
+      </p>
+      <div className="row">
+        <label>
+          <span>URL</span>
+          <input
+            value={form.flaresolverrUrl ?? ''}
+            onChange={(e) => set('flaresolverrUrl', e.target.value)}
+            placeholder="http://flaresolverr:8191"
+          />
         </label>
       </div>
 

@@ -1,12 +1,17 @@
 import * as cheerio from 'cheerio';
 import { LetterboxdMovie, LETTERBOXD_BASE_URL } from ".";
-import { fetchWithRetry } from './http';
+import { fetchWithRetry, ScrapeHttpOptions } from './http';
 import { resolveMoviesTolerant } from './resolve';
 import logger from '../util/logger';
 import Scraper from './scraper.interface';
 
 export class CollectionsScraper implements Scraper {
-    constructor(private url: string, private take?: number, private strategy?: 'oldest' | 'newest') {}
+    constructor(
+        private url: string,
+        private take?: number,
+        private strategy?: 'oldest' | 'newest',
+        private http: ScrapeHttpOptions = {}
+    ) {}
 
     async getMovies(): Promise<LetterboxdMovie[]> {
         // For oldest strategy, modify the original URL before transforming to AJAX
@@ -25,7 +30,7 @@ export class CollectionsScraper implements Scraper {
         const allMovieLinks = await this.getAllMovieLinks(processUrl);
         const linksToProcess = typeof this.take === 'number' ? allMovieLinks.slice(0, this.take) : allMovieLinks;
 
-        return resolveMoviesTolerant(linksToProcess);
+        return resolveMoviesTolerant(linksToProcess, this.http);
     }
 
     private transformToAjaxUrl(url: string): string {
@@ -53,7 +58,7 @@ export class CollectionsScraper implements Scraper {
         while (currentUrl) {
             logger.debug(`Fetching collections page: ${currentUrl}`);
 
-            const response = await fetchWithRetry(currentUrl);
+            const response = await fetchWithRetry(currentUrl, this.http);
             if (!response.ok) {
                 throw new Error(`Failed to fetch collections page: ${response.status}`);
             }

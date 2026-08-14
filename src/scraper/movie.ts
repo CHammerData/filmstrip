@@ -1,16 +1,17 @@
 import * as cheerio from 'cheerio';
 import { LETTERBOXD_BASE_URL, LetterboxdMovie } from ".";
-import { fetchWithRetry } from './http';
+import { fetchWithRetry, ScrapeHttpOptions } from './http';
 import logger from '../util/logger';
 
 /**
  * Obtain details of a movie.
  * @param link - This is the 'data-film-link' property on the movie div in letterboxd.
+ * @param http - HTTP fallback options (FlareSolverr endpoint), threaded from the caller.
  */
-export async function getMovie(link: string): Promise<LetterboxdMovie> {
+export async function getMovie(link: string, http: ScrapeHttpOptions = {}): Promise<LetterboxdMovie> {
     const movieUrl = new URL(link, LETTERBOXD_BASE_URL).toString();
 
-    const response = await fetchWithRetry(movieUrl);
+    const response = await fetchWithRetry(movieUrl, http);
     if (!response.ok) {
         throw new Error(`Failed to fetch movie page: ${response.status} ${response.statusText}`);
     }

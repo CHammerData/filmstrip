@@ -20,6 +20,7 @@ const patchSchema = z
     radarrApiKey: z.string().nullable(),
     jellyfinUrl: connectionUrl,
     jellyfinApiKey: z.string().nullable(),
+    flaresolverrUrl: connectionUrl,
     defaultQualityProfile: z.string().nullable(),
     defaultRootFolderId: z.string().nullable(),
     defaultMinimumAvailability: z.enum(['announced', 'inCinemas', 'released']),

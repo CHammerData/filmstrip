@@ -49,6 +49,7 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
     radarrApiKey: 'key',
     jellyfinUrl: 'http://jellyfin:8096',
     jellyfinApiKey: 'jf-key',
+    flaresolverrUrl: null,
     defaultQualityProfile: 'HD-1080p',
     defaultRootFolderId: null,
     defaultMinimumAvailability: 'released',

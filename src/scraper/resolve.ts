@@ -1,7 +1,7 @@
 import Bluebird from 'bluebird';
 import { LetterboxdMovie } from '.';
 import { getMovie } from './movie';
-import { SCRAPE_CONCURRENCY } from './http';
+import { SCRAPE_CONCURRENCY, ScrapeHttpOptions } from './http';
 import logger from '../util/logger';
 
 /**
@@ -10,12 +10,15 @@ import logger from '../util/logger';
  * rather than aborting the whole list — one flaky request among hundreds must not fail the sync.
  * Runs at SCRAPE_CONCURRENCY.
  */
-export async function resolveMoviesTolerant(links: string[]): Promise<LetterboxdMovie[]> {
+export async function resolveMoviesTolerant(
+  links: string[],
+  http: ScrapeHttpOptions = {}
+): Promise<LetterboxdMovie[]> {
   const results = await Bluebird.map(
     links,
     async (link): Promise<LetterboxdMovie | null> => {
       try {
-        return await getMovie(link);
+        return await getMovie(link, http);
       } catch (e) {
         logger.warn(`Skipping film ${link}: ${e instanceof Error ? e.message : e}`);
         return null;

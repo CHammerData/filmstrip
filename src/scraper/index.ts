@@ -1,6 +1,7 @@
 import { ListScraper } from './list';
 import { CollectionsScraper } from './collections';
 import { PopularScraper } from './popular';
+import { ScrapeHttpOptions } from './http';
 
 export interface LetterboxdMovie {
     /** Letterboxd's internal film id. Best-effort metadata only — Filmstrip keys films by tmdbId
@@ -51,11 +52,16 @@ export const detectListType = (url: string): ListType | null => {
  *
  * `take`/`strategy` are passed by the caller (per-list config), replacing the old
  * env-driven globals. Omit both to scrape the whole list (upstream default).
+ *
+ * `http` carries the FlareSolverr endpoint from Settings, needed to get past page 1 of any list
+ * (see `fetchWithRetry`). Omitting it isn't an error -- the scrape just stops where Letterboxd
+ * starts refusing plain HTTP clients.
  */
 export const fetchMoviesFromUrl = async (
   url: string,
   take?: number,
-  strategy?: 'oldest' | 'newest'
+  strategy?: 'oldest' | 'newest',
+  http: ScrapeHttpOptions = {}
 ): Promise<LetterboxdMovie[]> => {
   const listType = detectListType(url);
 
@@ -71,15 +77,15 @@ export const fetchMoviesFromUrl = async (
     case ListType.REGULAR_LIST:
     case ListType.WATCHED_MOVIES:
       // Filmography pages, lists, and watched movies use the same HTML structure.
-      return new ListScraper(url, take, strategy).getMovies();
+      return new ListScraper(url, take, strategy, http).getMovies();
 
     case ListType.COLLECTIONS:
       // Collections load movies via AJAX endpoint.
-      return new CollectionsScraper(url, take, strategy).getMovies();
+      return new CollectionsScraper(url, take, strategy, http).getMovies();
 
     case ListType.POPULAR_MOVIES:
       // Popular movies load via AJAX endpoint.
-      return new PopularScraper(url, take, strategy).getMovies();
+      return new PopularScraper(url, take, strategy, http).getMovies();
 
     default:
       throw new Error(`Unsupported list type: ${listType}`);

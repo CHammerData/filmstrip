@@ -12,6 +12,11 @@ jest.mock('fs/promises', () => ({
   rm: (...args: unknown[]) => mockRm(...args),
 }));
 
+const mockFlaresolverr = jest.fn();
+jest.mock('../api/flaresolverr', () => ({
+  fetchViaFlaresolverr: (...args: unknown[]) => mockFlaresolverr(...args),
+}));
+
 global.fetch = jest.fn();
 
 /** Configure the mocked curl subprocess to "succeed" with the given status/body. */
@@ -142,6 +147,69 @@ describe('fetchWithRetry', () => {
 
     await expect(fetchWithRetry('https://letterboxd.com/x/')).rejects.toThrow('no `curl` binary on PATH');
   }, 10000); // exhausts all 3 attempts, so it sits through the full backoff
+
+  describe('FlareSolverr escalation', () => {
+    const FS = { flaresolverrUrl: 'http://flaresolverr:8191' };
+
+    it('escalates to FlareSolverr when curl is also refused', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 403 });
+      mockCurlResult(403, '');
+      mockFlaresolverr.mockResolvedValueOnce(new Response('<html>p2</html>', { status: 200 }));
+
+      const res = await fetchWithRetry('https://letterboxd.com/films/popular/page/2/', FS);
+
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe('<html>p2</html>');
+      expect(mockFlaresolverr).toHaveBeenCalledWith(
+        { url: 'http://flaresolverr:8191' },
+        'https://letterboxd.com/films/popular/page/2/'
+      );
+      // The browser rung is expensive: reached once, not once per retry attempt.
+      expect(mockFlaresolverr).toHaveBeenCalledTimes(1);
+      expect(mockExecFile).toHaveBeenCalledTimes(1);
+    });
+
+    it('never touches FlareSolverr when curl succeeds', async () => {
+      (global.fetch as jest.Mock).mockResolvedValueOnce({ ok: false, status: 403 });
+      mockCurlResult(200, '<html>ok</html>');
+
+      const res = await fetchWithRetry('https://letterboxd.com/x/', FS);
+
+      expect(res.status).toBe(200);
+      expect(mockFlaresolverr).not.toHaveBeenCalled();
+    });
+
+    it('returns a FlareSolverr 403 immediately instead of retrying a browser that was refused', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 403 });
+      mockCurlResult(403, '');
+      mockFlaresolverr.mockResolvedValue(new Response('denied', { status: 403 }));
+
+      const res = await fetchWithRetry('https://letterboxd.com/x/page/2/', FS);
+
+      expect(res.status).toBe(403);
+      expect(mockFlaresolverr).toHaveBeenCalledTimes(1); // authoritative -- no backoff loop
+    });
+
+    it('falls back to the curl 403 when FlareSolverr itself is unreachable', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 403 });
+      mockCurlResult(403, '');
+      mockFlaresolverr.mockRejectedValue(new Error('connect ECONNREFUSED'));
+
+      const res = await fetchWithRetry('https://letterboxd.com/x/page/2/', FS);
+
+      expect(res.status).toBe(403); // surfaced to the caller, not thrown as a FlareSolverr error
+    }, 10000);
+
+    it('skips the browser rung entirely when no FlareSolverr URL is configured', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 403 });
+      mockCurlResult(403, '');
+
+      const res = await fetchWithRetry('https://letterboxd.com/x/page/2/');
+
+      expect(res.status).toBe(403);
+      expect(mockFlaresolverr).not.toHaveBeenCalled();
+    }, 10000);
+  });
 
   it('cleans up the temp file after reading it', async () => {
     (global.fetch as jest.Mock).mockResolvedValueOnce({ ok: false, status: 403 });

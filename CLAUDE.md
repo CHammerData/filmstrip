@@ -66,8 +66,13 @@ or kept; `reason` ∈ `left_list | watched | list_deleted | list_deactivated | m
 logged, with why).
 
 Module layout:
-- **`src/scraper/`** — reused from upstream. `fetchMoviesFromUrl(url, take?, strategy?)` detects the
-  list type and delegates to a per-type scraper. Stateless; takes params, reads no globals.
+- **`src/scraper/`** — reused from upstream. `fetchMoviesFromUrl(url, take?, strategy?, http?)`
+  detects the list type and delegates to a per-type scraper. Stateless; takes params, reads no
+  globals. `http.ts` holds the fetch ladder (see "Letterboxd blocks" below) and is the one piece of
+  module state in here — a learned per-host "Node's fetch is blocked" cache, not config.
+- **`src/api/flaresolverr.ts`** — `fetchViaFlaresolverr({url}, targetUrl)` posts a `request.get` to
+  FlareSolverr's `/v1` and returns the solved page as a `Response`, so it drops into the same ladder
+  as `fetch`/curl. Optional: unset `Settings.flaresolverrUrl` just means no browser rung.
 - **`src/api/radarr.ts`** — reused/parameterized. `createRadarrClient({url, apiKey})` builds an axios
   client; `upsertMovies(client, movies, options)` adds movies and returns an `UpsertSummary` of
   per-movie outcomes; `getMovieById`/`getAllTags`/`setMonitored`/`deleteMovie(client, id)` (always
@@ -223,6 +228,22 @@ Module layout:
   always also run `npm run test:unit` after a schema change, since ts-jest is what actually
   typechecks the test fixtures.
 - Keep the upstream `src/scraper/*` modules close to upstream so their scraping fixes can be cherry-picked.
+- **Letterboxd blocks, and the fetch ladder in `src/scraper/http.ts`.** Three rungs, each added
+  because the one above it demonstrably fails:
+  1. `fetch` — 403s on Letterboxd for whole stretches at a time. Once a host 403s, it is not probed
+     again until a 30-min TTL lapses; that state is module-scoped **on purpose**. Re-probing per
+     call meant a scrape's hundreds of film pages each fired a doomed `fetch` immediately followed
+     by curl, which kept the block permanently hot.
+  2. curl — clears what `fetch` can't (a TLS/HTTP client fingerprint false-positive), but *only* on
+     unpaginated URLs.
+  3. FlareSolverr — a real browser, and the only thing that gets page 2+. Confirmed live against
+     `/films/popular/page/2/`, which has no account context at all: page 1 returns 200 to curl,
+     page 2 returns 403 cold, with a page-1 session, and with a Referer — while a browser loads it
+     from both a home and a cellular connection. Not the IP, not cookies, not the account.
+     Deliberately last: it costs a browser navigation, and nothing but pagination needs it.
+
+  A 403 from FlareSolverr is authoritative and returned without retrying. With no FlareSolverr URL
+  set, multi-page lists silently stop at page 1 — the give-up warn says so explicitly.
 - Prisma is pinned to **v6** on purpose (v7 needs a native driver adapter + ESM; bad fit here).
 - **npm scripts that pass a regex containing `|` to Jest must quote it** (e.g.
   `--testPathIgnorePatterns=\"itest|livetest\"`) — npm runs scripts through a real shell (bash on
@@ -241,8 +262,11 @@ M1–M7 (the full initial roadmap) are done: DB-backed multi-list core, normaliz
 provenance, reconcile + deletion approval, Jellyfin integration, the REST API, the React SPA +
 Jellyfin auth, and the single-container Docker build. The multi-stage `Dockerfile` builds the SPA +
 backend and runs one Node process (migrate deploy → serve SPA + `/api`); SQLite persists on a
-`/config` volume. Deploying it as a `filmstrip` service in the separate **Home_Lab_Setup** compose
-repo is intended but **not yet done** (deliberately on hold).
+`/config` volume. It is deployed as a `filmstrip` service in the separate **Home_Lab_Setup** compose
+repo (on Melchior, port 3004, `chrischammer/filmstrip:latest`, SQLite on `./config/filmstrip`), and
+reachable through NPM at `https://filmstrip.magi-home.xyz` — the session cookie is `Secure`, so
+plain `http://melchior.home:3004` drops it and can't log in. FlareSolverr (`http://flaresolverr:8191`)
+already runs in that same stack and is what `Settings.flaresolverrUrl` should point at.
 
 Deferred refinements (tracked, not built): per-user list-ownership scoping (any authed user sees all
 lists); Quick Connect login; rewiring `unwatchedOnly` onto the `WatchedFilm` cache (still a live

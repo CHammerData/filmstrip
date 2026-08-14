@@ -115,7 +115,8 @@ describe('scraper index', () => {
       expect(ListScraper).toHaveBeenCalledWith(
         'https://letterboxd.com/user/watchlist',
         undefined,
-        undefined
+        undefined,
+        {}
       );
     });
 
@@ -135,7 +136,8 @@ describe('scraper index', () => {
       expect(ListScraper).toHaveBeenCalledWith(
         'https://letterboxd.com/user/list/my-list',
         undefined,
-        undefined
+        undefined,
+        {}
       );
     });
 
@@ -168,7 +170,8 @@ describe('scraper index', () => {
       expect(ListScraper).toHaveBeenCalledWith(
         'https://letterboxd.com/user/films',
         undefined,
-        undefined
+        undefined,
+        {}
       );
     });
 
@@ -188,7 +191,8 @@ describe('scraper index', () => {
       expect(ListScraper).toHaveBeenCalledWith(
         'https://letterboxd.com/actor/tom-hanks',
         undefined,
-        undefined
+        undefined,
+        {}
       );
     });
 
@@ -208,7 +212,8 @@ describe('scraper index', () => {
       expect(ListScraper).toHaveBeenCalledWith(
         'https://letterboxd.com/director/steven-spielberg',
         undefined,
-        undefined
+        undefined,
+        {}
       );
     });
 
@@ -228,7 +233,8 @@ describe('scraper index', () => {
       expect(ListScraper).toHaveBeenCalledWith(
         'https://letterboxd.com/writer/aaron-sorkin',
         undefined,
-        undefined
+        undefined,
+        {}
       );
     });
 
@@ -248,7 +254,8 @@ describe('scraper index', () => {
       expect(CollectionsScraper).toHaveBeenCalledWith(
         'https://letterboxd.com/films/in/marvel-cinematic-universe',
         undefined,
-        undefined
+        undefined,
+        {}
       );
     });
 
@@ -268,7 +275,8 @@ describe('scraper index', () => {
       expect(PopularScraper).toHaveBeenCalledWith(
         'https://letterboxd.com/films/popular',
         undefined,
-        undefined
+        undefined,
+        {}
       );
     });
 

@@ -145,9 +145,9 @@ describe('CollectionsScraper', () => {
 
       expect(movies).toHaveLength(3);
       expect(getMovie).toHaveBeenCalledTimes(3);
-      expect(getMovie).toHaveBeenCalledWith('/film/movie1/');
-      expect(getMovie).toHaveBeenCalledWith('/film/movie2/');
-      expect(getMovie).toHaveBeenCalledWith('/film/movie3/');
+      expect(getMovie).toHaveBeenCalledWith('/film/movie1/', {});
+      expect(getMovie).toHaveBeenCalledWith('/film/movie2/', {});
+      expect(getMovie).toHaveBeenCalledWith('/film/movie3/', {});
     });
 
     it('should respect take limit', async () => {

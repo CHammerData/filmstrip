@@ -23,6 +23,12 @@ model Settings {
   jellyfinUrl    String?
   jellyfinApiKey String?
 
+  /// FlareSolverr endpoint (e.g. http://flaresolverr:8191). Optional: the scraper only reaches for
+  /// it when both Node's HTTP stack and curl are refused, which Letterboxd does on paginated paths
+  /// -- page 1 of a list serves fine to any client, page 2+ is gated on passing as a real browser.
+  /// Unset means no browser fallback, so multi-page lists stop at page 1.
+  flaresolverrUrl String?
+
   // Global defaults — a List's null fields inherit these.
   defaultQualityProfile      String?
   defaultRootFolderId        String?

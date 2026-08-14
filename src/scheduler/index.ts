@@ -39,7 +39,9 @@ export async function syncList(list: ListWithUser): Promise<SyncResult> {
     const config = resolveListConfig(list, settings);
     logger.info(`Syncing list "${config.label}" (${config.url})${config.dryRun ? ' [DRY RUN]' : ''}`);
 
-    const scraped = await fetchMoviesFromUrl(config.url, config.take, config.strategy);
+    const scraped = await fetchMoviesFromUrl(config.url, config.take, config.strategy, {
+      flaresolverrUrl: settings.flaresolverrUrl,
+    });
 
     // Watched-state (DESIGN.md §7) is only fetched if a toggle actually needs it. unwatchedOnly
     // still reads the live-scrape/Jellyfin union (presence only, no dates); removeOnWatch reads

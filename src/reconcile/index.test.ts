@@ -65,6 +65,7 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
     radarrApiKey: 'key',
     jellyfinUrl: null,
     jellyfinApiKey: null,
+    flaresolverrUrl: null,
     defaultQualityProfile: 'HD-1080p',
     defaultRootFolderId: null,
     defaultMinimumAvailability: 'released',

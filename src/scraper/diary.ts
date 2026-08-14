@@ -1,7 +1,7 @@
 import * as cheerio from 'cheerio';
 import Bluebird from 'bluebird';
 import { LETTERBOXD_BASE_URL } from '.';
-import { fetchWithRetry, SCRAPE_CONCURRENCY } from './http';
+import { fetchWithRetry, SCRAPE_CONCURRENCY, ScrapeHttpOptions } from './http';
 import { getMovie } from './movie';
 import logger from '../util/logger';
 
@@ -39,11 +39,14 @@ interface RawDiaryRow {
  * intentional, not a bug -- see `getOwnerWatchedTmdbIds`.
  */
 export class DiaryScraper {
-  constructor(private username: string) {}
+  constructor(
+    private username: string,
+    private http: ScrapeHttpOptions = {}
+  ) {}
 
   async getEntries(): Promise<DiaryEntry[]> {
     const rows = await this.getAllDiaryRows(`${LETTERBOXD_BASE_URL}/${this.username}/diary/`);
-    return resolveDiaryRowsTolerant(rows);
+    return resolveDiaryRowsTolerant(rows, this.http);
   }
 
   private async getAllDiaryRows(baseUrl: string): Promise<RawDiaryRow[]> {
@@ -58,7 +61,7 @@ export class DiaryScraper {
 
     while (currentUrl) {
       logger.debug(`Fetching diary page: ${currentUrl}`);
-      const response = await fetchWithRetry(currentUrl);
+      const response = await fetchWithRetry(currentUrl, this.http);
       if (!response.ok) {
         throw new Error(`Failed to fetch diary page: ${response.status}`);
       }
@@ -110,12 +113,15 @@ export class DiaryScraper {
  * `resolveMoviesTolerant` does for lists -- but keeping each entry's own watchedAt paired with it
  * (a plain filter-then-zip would desync dates from films the moment any single entry fails).
  */
-async function resolveDiaryRowsTolerant(rows: RawDiaryRow[]): Promise<DiaryEntry[]> {
+async function resolveDiaryRowsTolerant(
+  rows: RawDiaryRow[],
+  http: ScrapeHttpOptions = {}
+): Promise<DiaryEntry[]> {
   const results = await Bluebird.map(
     rows,
     async (row): Promise<DiaryEntry | null> => {
       try {
-        const movie = await getMovie(row.link);
+        const movie = await getMovie(row.link, http);
         if (!movie.tmdbId) return null;
         return { tmdbId: movie.tmdbId, watchedAt: row.watchedAt };
       } catch (e) {

@@ -3,9 +3,22 @@ import { promisify } from 'util';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import { fetchViaFlaresolverr } from '../api/flaresolverr';
 import logger from '../util/logger';
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Per-scrape HTTP options, threaded down from the caller alongside the URL (the scraper modules
+ * read no globals -- config comes from the DB via the scheduler, same as everything else).
+ */
+export interface ScrapeHttpOptions {
+  /**
+   * FlareSolverr endpoint, from `Settings.flaresolverrUrl`. Omitted/null means no browser
+   * fallback: paginated Letterboxd paths will stay 403 and the scrape stops at page 1.
+   */
+  flaresolverrUrl?: string | null;
+}
 
 // A browser-like User-Agent + Accept headers. Letterboxd (behind Cloudflare) is friendlier to these
 // than to undici's bare default, and it costs nothing to look like a normal client.
@@ -135,9 +148,17 @@ async function fetchWithCurl(url: string): Promise<Response> {
  * pages, so scoping the knowledge per-call was enough to keep the block permanently hot. A 403 from
  * curl itself is retried curl-only, with backoff. Every other status (404, etc.) still surfaces
  * immediately with the caller's own message.
+ *
+ * When curl is refused too and a FlareSolverr endpoint is configured, the request drops to a real
+ * browser (see `fetchViaFlaresolverr`) -- the only thing that clears Letterboxd's check on
+ * paginated paths. That rung is deliberately last: it costs a browser navigation, and the vast
+ * majority of a scrape (every individual film page) never needs it. A 403 from FlareSolverr is
+ * treated as authoritative and returned immediately rather than retried -- if a real browser is
+ * refused, spinning up two more won't help.
  */
-export async function fetchWithRetry(url: string): Promise<Response> {
+export async function fetchWithRetry(url: string, options: ScrapeHttpOptions = {}): Promise<Response> {
   const host = hostOf(url);
+  const flaresolverrUrl = options.flaresolverrUrl?.trim() || null;
   let lastErr: unknown;
   let lastResponse: Response | undefined;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -153,7 +174,19 @@ export async function fetchWithRetry(url: string): Promise<Response> {
         }
       }
       if (response.status !== 403) return response;
-      lastResponse = response; // curl got 403 too -- fall through to the retry/backoff below
+      // Remember the curl 403 before escalating: if FlareSolverr is unreachable, the scrape should
+      // degrade to this status (loudly, via the give-up warn) rather than throwing a connection
+      // error that buries what actually happened to the page.
+      lastResponse = response;
+      if (flaresolverrUrl) {
+        logger.debug(`curl got 403 for ${url}; escalating to FlareSolverr.`);
+        const solved = await fetchViaFlaresolverr({ url: flaresolverrUrl }, url);
+        if (solved.status === 403) {
+          logger.warn(`FlareSolverr was also refused (403) for ${url}; not retrying -- a browser can't get past this.`);
+        }
+        return solved;
+      }
+      // No browser fallback configured -- fall through to the retry/backoff below.
     } catch (e) {
       lastErr = e;
     }
@@ -174,7 +207,10 @@ export async function fetchWithRetry(url: string): Promise<Response> {
       `Giving up on ${url} after ${MAX_ATTEMPTS} attempts: curl fallback also returned ` +
         `${lastResponse.status}` +
         (lastErr ? `; last curl error: ${lastErr instanceof Error ? lastErr.message : lastErr}` : '') +
-        '.'
+        (flaresolverrUrl
+          ? '.'
+          : '. Letterboxd gates paginated paths on a real browser -- set a FlareSolverr URL in ' +
+            'Settings to scrape past page 1.')
     );
     return lastResponse;
   }

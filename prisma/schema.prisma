@@ -272,6 +272,32 @@ model WatchedFilm {
   @@index([userId])
 }
 
+/// Letterboxd film slug -> film identity, cached permanently.
+///
+/// Resolving a Letterboxd link to a tmdbId means fetching that film's page, and a scrape re-derived
+/// the same mapping for every film it had already seen, every run: a single watched-state refresh
+/// cost ~3,500 film-page requests, and every list sync re-fetched every film on the list. The
+/// mapping is immutable -- a slug always points at the same film -- so there is no staleness to
+/// manage and no TTL.
+///
+/// Only films that actually resolved to a tmdbId are cached. A film Letterboxd has no TMDB link for
+/// (TV, or simply not linked yet) is left uncached so it gets another chance on the next run.
+model LetterboxdFilm {
+  id   Int    @id @default(autoincrement())
+  /// The Letterboxd link exactly as it appears in list/diary markup, e.g. "/film/heat/".
+  slug String @unique
+
+  tmdbId String
+  imdbId String?
+  title  String
+  year   Int?
+  /// Letterboxd's own film id. Best-effort metadata; null when the markup omits it.
+  letterboxdId Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 /// The deletion approval queue (the keeper-rule's output, DESIGN.md §5-§6). A candidate is never
 /// deleted directly — it's marked pending here for a human to approve or keep.
 model DeletionRequest {

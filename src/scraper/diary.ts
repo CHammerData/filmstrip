@@ -1,9 +1,9 @@
 import * as cheerio from 'cheerio';
 import Bluebird from 'bluebird';
-import { LETTERBOXD_BASE_URL } from '.';
-import { fetchWithRetry, SCRAPE_CONCURRENCY, ScrapeHttpOptions } from './http';
+import { LETTERBOXD_BASE_URL, LetterboxdMovie } from '.';
+import { fetchWithRetry, SCRAPE_CONCURRENCY } from './http';
 import { getMovie } from './movie';
-import { isFilmLink } from './resolve';
+import { isFilmLink, FilmCache, ScrapeOptions } from './resolve';
 import logger from '../util/logger';
 
 /** One diary-logged viewing, resolved to a stable film identity. */
@@ -42,12 +42,12 @@ interface RawDiaryRow {
 export class DiaryScraper {
   constructor(
     private username: string,
-    private http: ScrapeHttpOptions = {}
+    private opts: ScrapeOptions = {}
   ) {}
 
   async getEntries(): Promise<DiaryEntry[]> {
     const rows = await this.getAllDiaryRows(`${LETTERBOXD_BASE_URL}/${this.username}/diary/`);
-    return resolveDiaryRowsTolerant(rows, this.http);
+    return resolveDiaryRowsTolerant(rows, this.opts, this.opts.filmCache);
   }
 
   private async getAllDiaryRows(baseUrl: string): Promise<RawDiaryRow[]> {
@@ -62,7 +62,7 @@ export class DiaryScraper {
 
     while (currentUrl) {
       logger.debug(`Fetching diary page: ${currentUrl}`);
-      const response = await fetchWithRetry(currentUrl, this.http);
+      const response = await fetchWithRetry(currentUrl, this.opts);
       if (!response.ok) {
         throw new Error(`Failed to fetch diary page: ${response.status}`);
       }
@@ -116,24 +116,48 @@ export class DiaryScraper {
  */
 async function resolveDiaryRowsTolerant(
   rows: RawDiaryRow[],
-  http: ScrapeHttpOptions = {}
+  http: ScrapeOptions = {},
+  cache?: FilmCache
 ): Promise<DiaryEntry[]> {
+  // A rewatch logs the same film on several dates, so the same slug can appear many times here --
+  // dedupe before hitting the cache or the network, then fan the result back out over every row.
+  const uniqueSlugs = [...new Set(rows.map((r) => r.link))];
+  const cached = cache ? await cache.getMany(uniqueSlugs) : new Map<string, LetterboxdMovie>();
+  const toFetch = uniqueSlugs.filter((slug) => !cached.has(slug));
+  if (cache && cached.size > 0) {
+    logger.debug(`Film cache: ${cached.size}/${uniqueSlugs.length} diary films hit; fetching ${toFetch.length}.`);
+  }
+
   const results = await Bluebird.map(
-    rows,
-    async (row): Promise<DiaryEntry | null> => {
+    toFetch,
+    async (slug): Promise<LetterboxdMovie | null> => {
       try {
-        const movie = await getMovie(row.link, http);
-        if (!movie.tmdbId) return null;
-        return { tmdbId: movie.tmdbId, watchedAt: row.watchedAt };
+        return await getMovie(slug, http);
       } catch (e) {
-        logger.warn(`Skipping diary entry ${row.link}: ${e instanceof Error ? e.message : e}`);
+        logger.warn(`Skipping diary entry ${slug}: ${e instanceof Error ? e.message : e}`);
         return null;
       }
     },
     { concurrency: SCRAPE_CONCURRENCY }
   );
 
-  const entries = results.filter((r): r is DiaryEntry => r !== null);
+  const fetched = results.filter((m): m is LetterboxdMovie => m !== null);
+  if (cache && fetched.length > 0) await cache.putMany(fetched);
+
+  // Keyed on the slug we asked for (Bluebird.map preserves order), not the resolved movie's own.
+  const bySlug = new Map(cached);
+  results.forEach((movie, i) => {
+    if (movie) bySlug.set(toFetch[i], movie);
+  });
+
+  // Fan the resolved films back out over every row, so a rewatch keeps one entry per logged date.
+  const perRow = rows.map((row): DiaryEntry | null => {
+    const movie = bySlug.get(row.link);
+    if (!movie?.tmdbId) return null;
+    return { tmdbId: movie.tmdbId, watchedAt: row.watchedAt };
+  });
+
+  const entries = perRow.filter((r): r is DiaryEntry => r !== null);
   const skipped = rows.length - entries.length;
   if (skipped > 0) {
     logger.warn(`Resolved ${entries.length}/${rows.length} diary entries; ${skipped} skipped after retries.`);

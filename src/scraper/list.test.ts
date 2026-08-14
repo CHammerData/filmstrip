@@ -245,5 +245,35 @@ describe('ListScraper', () => {
       expect(movies).toHaveLength(0);
       expect(movieModule.getMovie).not.toHaveBeenCalled();
     });
+
+    it('ignores non-film tiles that share the film selector', async () => {
+      // Letterboxd's grid mixes in promo components carrying a bare "/" link. Resolving those hit
+      // the homepage, burned a retry+backoff cycle each, and logged 403s unrelated to any block.
+      const mockHtml = `
+        <html>
+          <body>
+            <div class="react-component" data-target-link="/film/movie1/"></div>
+            <div class="react-component" data-target-link="/"></div>
+            <div class="react-component" data-target-link="/films/popular/"></div>
+          </body>
+        </html>
+      `;
+
+      (global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, text: async () => mockHtml });
+      (movieModule.getMovie as jest.Mock).mockResolvedValue({
+        id: 1,
+        name: 'Movie 1',
+        slug: '/film/movie1/',
+        tmdbId: '1',
+        imdbId: null,
+        publishedYear: null,
+      });
+
+      const movies = await new ListScraper('https://letterboxd.com/user/watchlist/').getMovies();
+
+      expect(movies).toHaveLength(1);
+      expect(movieModule.getMovie).toHaveBeenCalledTimes(1);
+      expect(movieModule.getMovie).toHaveBeenCalledWith('/film/movie1/', {});
+    });
   });
 });

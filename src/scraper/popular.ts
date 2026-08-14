@@ -1,7 +1,7 @@
 import * as cheerio from 'cheerio';
 import { LetterboxdMovie, LETTERBOXD_BASE_URL } from ".";
 import { fetchWithRetry, ScrapeHttpOptions } from './http';
-import { resolveMoviesTolerant } from './resolve';
+import { resolveMoviesTolerant, isFilmLink } from './resolve';
 import logger from '../util/logger';
 import Scraper from './scraper.interface';
 
@@ -75,7 +75,7 @@ export class PopularScraper implements Scraper {
 
         $('.react-component[data-target-link]').each((_, element) => {
             const filmLink = $(element).attr('data-target-link');
-            if (filmLink) {
+            if (isFilmLink(filmLink)) {
                 links.push(filmLink);
             }
         });

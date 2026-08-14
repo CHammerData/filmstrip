@@ -27,6 +27,65 @@ describe('isFilmLink', () => {
   });
 });
 
+describe('resolveMoviesTolerant with a film cache', () => {
+  /** A FilmCache backed by a plain Map, so these tests never touch prisma. */
+  function fakeCache(seed: string[] = []) {
+    const store = new Map(seed.map((slug) => [slug, mockMovie(slug)]));
+    return {
+      store,
+      getMany: jest.fn(async (slugs: string[]) => {
+        const hits = new Map<string, ReturnType<typeof mockMovie>>();
+        for (const s of slugs) {
+          const hit = store.get(s);
+          if (hit) hits.set(s, hit);
+        }
+        return hits;
+      }),
+      putMany: jest.fn(async (movies: ReturnType<typeof mockMovie>[]) => {
+        for (const m of movies) store.set(m.slug, m);
+      }),
+    };
+  }
+
+  it('fetches only the films the cache does not already know', async () => {
+    const cache = fakeCache(['/film/a/']);
+    (getMovie as jest.Mock).mockImplementation(async (link: string) => mockMovie(link));
+
+    const movies = await resolveMoviesTolerant(['/film/a/', '/film/b/'], {}, cache);
+
+    expect(getMovie).toHaveBeenCalledTimes(1);
+    expect(getMovie).toHaveBeenCalledWith('/film/b/', {});
+    expect(movies.map((m) => m.slug)).toEqual(['/film/a/', '/film/b/']); // caller's order preserved
+  });
+
+  it('writes newly resolved films back to the cache', async () => {
+    const cache = fakeCache();
+    (getMovie as jest.Mock).mockImplementation(async (link: string) => mockMovie(link));
+
+    await resolveMoviesTolerant(['/film/a/'], {}, cache);
+
+    expect(cache.putMany).toHaveBeenCalledWith([expect.objectContaining({ slug: '/film/a/' })]);
+  });
+
+  it('skips the network entirely when every film is cached', async () => {
+    const cache = fakeCache(['/film/a/', '/film/b/']);
+
+    const movies = await resolveMoviesTolerant(['/film/a/', '/film/b/'], {}, cache);
+
+    expect(getMovie).not.toHaveBeenCalled();
+    expect(movies).toHaveLength(2);
+  });
+
+  it('still resolves everything when no cache is supplied', async () => {
+    (getMovie as jest.Mock).mockImplementation(async (link: string) => mockMovie(link));
+
+    const movies = await resolveMoviesTolerant(['/film/a/', '/film/b/']);
+
+    expect(getMovie).toHaveBeenCalledTimes(2);
+    expect(movies).toHaveLength(2);
+  });
+});
+
 describe('resolveMoviesTolerant', () => {
   it('skips a film that fails and returns the rest (one flaky fetch must not abort the list)', async () => {
     (getMovie as jest.Mock).mockImplementation(async (link: string) => {

@@ -1,5 +1,5 @@
 import { Fragment, FormEvent, useState } from 'react';
-import { get, post, patch, del, ApiError, User, JellyfinCandidates, ForceReconcileWatchedResult } from '../api';
+import { get, post, patch, del, ApiError, User, JellyfinCandidates, RefreshWatchedStarted } from '../api';
 import { useLoad } from '../useLoad';
 
 /** Turn a display name into a Radarr-safe tag suggestion (mirrors the server's deriveUniqueTag). */
@@ -37,13 +37,16 @@ export default function Users() {
     setError(null);
     setBusyId(id);
     try {
-      const r = await post<ForceReconcileWatchedResult>(`/users/${id}/refresh-watched`);
+      await post<RefreshWatchedStarted>(`/users/${id}/refresh-watched`);
+      // The refresh runs detached on the server -- a full first pass over a large Letterboxd
+      // history takes minutes, far longer than any proxy will hold the request open. "Last
+      // refreshed" in the table is what confirms it landed.
       setNotice(
-        `Watched state refreshed: ${r.filmsKnownWatched} film(s) known watched; ` +
-          `${r.listsReconciled.length} removeOnWatch list(s) reconciled.`
+        'Watched-state refresh started. It runs in the background — a first pass over a large ' +
+          'Letterboxd history can take several minutes. "Last refreshed" updates when it finishes.'
       );
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : 'Watched-state refresh failed.');
+      setError(e instanceof ApiError ? e.message : 'Could not start the watched-state refresh.');
     } finally {
       setBusyId(null);
     }
@@ -67,6 +70,7 @@ export default function Users() {
                 <th>Radarr tag</th>
                 <th>Letterboxd</th>
                 <th>Jellyfin id</th>
+                <th>Watched refreshed</th>
                 <th>Enabled</th>
                 <th></th>
               </tr>
@@ -79,6 +83,10 @@ export default function Users() {
                     <td>{u.tag}</td>
                     <td className="muted">{u.letterboxdUsername ?? '—'}</td>
                     <td className="muted">{u.jellyfinUserId ?? '—'}</td>
+                    {/* The refresh runs detached, so this is how you see it actually finish. */}
+                    <td className="muted">
+                      {u.lastWatchedRefreshAt ? new Date(u.lastWatchedRefreshAt).toLocaleString() : 'never'}
+                    </td>
                     <td>{u.enabled ? 'yes' : 'no'}</td>
                     <td>
                       <div className="actions">
@@ -105,7 +113,7 @@ export default function Users() {
                   </tr>
                   {editing === u.id && (
                     <tr>
-                      <td colSpan={6}>
+                      <td colSpan={7}>
                         <EditUser
                           user={u}
                           onSaved={() => {

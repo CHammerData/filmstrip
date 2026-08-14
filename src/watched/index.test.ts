@@ -94,9 +94,12 @@ describe('getOwnerWatchedTmdbIds', () => {
 
     const result = await getOwnerWatchedTmdbIds(makeUser({ letterboxdUsername: 'chris' }), makeSettings());
 
-    expect(fetchMoviesFromUrl).toHaveBeenCalledWith('https://letterboxd.com/chris/films/', undefined, undefined, {
-      flaresolverrUrl: null,
-    });
+    expect(fetchMoviesFromUrl).toHaveBeenCalledWith(
+      'https://letterboxd.com/chris/films/',
+      undefined,
+      undefined,
+      expect.objectContaining({ flaresolverrUrl: null, filmCache: expect.anything() })
+    );
     expect(result).toEqual(new Set([100]));
   });
 

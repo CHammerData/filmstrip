@@ -2,6 +2,7 @@ import prisma from '../db/client';
 import { resolveListConfig, ListWithUser } from '../db/config';
 import { fetchMoviesFromUrl, LetterboxdMovie } from '../scraper';
 import { createRadarrClient, upsertMovies } from '../api/radarr';
+import { createFilmCache } from '../films/cache';
 import { reconcileList, reconcileWatched, applyPermanenceClaims } from '../reconcile';
 import { getOwnerWatchedTmdbIds, getDiaryWatchedDates, refreshWatchedState } from '../watched';
 import { syncCollection } from '../collections';
@@ -41,6 +42,7 @@ export async function syncList(list: ListWithUser): Promise<SyncResult> {
 
     const scraped = await fetchMoviesFromUrl(config.url, config.take, config.strategy, {
       flaresolverrUrl: settings.flaresolverrUrl,
+      filmCache: createFilmCache(),
     });
 
     // Watched-state (DESIGN.md §7) is only fetched if a toggle actually needs it. unwatchedOnly

@@ -292,7 +292,7 @@ describe('users (admin)', () => {
     expect(res.status).toBe(204);
   });
 
-  it('POST /:id/refresh-watched forces a refresh + reconcile and echoes the result', async () => {
+  it('POST /:id/refresh-watched accepts and runs the refresh detached', async () => {
     mockPrisma.user.findUnique.mockResolvedValue(regularUser);
     (forceReconcileWatched as jest.Mock).mockResolvedValue({
       userId: 2,
@@ -300,9 +300,21 @@ describe('users (admin)', () => {
       listsReconciled: [10],
     });
     const res = await request(app).post('/api/users/2/refresh-watched').set('Cookie', ADMIN);
-    expect(res.status).toBe(200);
+    // 202, not 200: a full refresh takes minutes, so the response can't wait on the result.
+    expect(res.status).toBe(202);
+    expect(res.body).toEqual({ status: 'started', userId: 2, startedAt: expect.any(String) });
     expect(forceReconcileWatched).toHaveBeenCalledWith(2);
-    expect(res.body).toEqual({ userId: 2, filmsKnownWatched: 12, listsReconciled: [10] });
+  });
+
+  it('POST /:id/refresh-watched still responds when the detached refresh throws', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue(regularUser);
+    (forceReconcileWatched as jest.Mock).mockRejectedValue(new Error('letterboxd down'));
+
+    const res = await request(app).post('/api/users/2/refresh-watched').set('Cookie', ADMIN);
+
+    // The failure is logged, never surfaced as an unhandled rejection after the response went out.
+    expect(res.status).toBe(202);
+    await new Promise((resolve) => setImmediate(resolve)); // let the detached rejection settle
   });
 
   it('POST /:id/refresh-watched returns 404 when the user is missing', async () => {

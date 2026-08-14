@@ -44,6 +44,7 @@ export interface User {
   enabled: boolean;
   letterboxdUsername: string | null;
   jellyfinUserId: string | null;
+  lastWatchedRefreshAt: string | null;
 }
 
 export interface List {
@@ -214,6 +215,13 @@ export interface ForceReconcileWatchedResult {
   userId: number;
   filmsKnownWatched: number;
   listsReconciled: number[];
+}
+
+/** 202 from POST /users/:id/refresh-watched — the work runs detached; poll lastWatchedRefreshAt. */
+export interface RefreshWatchedStarted {
+  status: 'started';
+  userId: number;
+  startedAt: string;
 }
 
 export interface Me {

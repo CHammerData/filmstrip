@@ -73,6 +73,10 @@ Module layout:
 - **`src/api/flaresolverr.ts`** — `fetchViaFlaresolverr({url}, targetUrl)` posts a `request.get` to
   FlareSolverr's `/v1` and returns the solved page as a `Response`, so it drops into the same ladder
   as `fetch`/curl. Optional: unset `Settings.flaresolverrUrl` just means no browser rung.
+- **`src/films/cache.ts`** — `createFilmCache()`: the prisma-backed `FilmCache` the scraper takes as
+  an injected interface (`LetterboxdFilm`, slug → tmdbId, permanent — a slug always names the same
+  film). Lives outside `src/scraper` so the scraper stays DB-free. Without it a single watched-state
+  refresh cost ~3,500 film-page fetches and every list sync re-resolved every film on the list.
 - **`src/api/radarr.ts`** — reused/parameterized. `createRadarrClient({url, apiKey})` builds an axios
   client; `upsertMovies(client, movies, options)` adds movies and returns an `UpsertSummary` of
   per-movie outcomes; `getMovieById`/`getAllTags`/`setMonitored`/`deleteMovie(client, id)` (always
@@ -244,6 +248,16 @@ Module layout:
 
   A 403 from FlareSolverr is authoritative and returned without retrying. With no FlareSolverr URL
   set, multi-page lists silently stop at page 1 — the give-up warn says so explicitly.
+- **Scrape cost is dominated by film pages, not pagination.** Resolving a link to a tmdbId means
+  fetching that film's page; a 2,000-film watched history is ~30 page fetches and ~3,500 film
+  fetches. `FilmCache` (`src/films/cache.ts`, injected via `ScrapeOptions.filmCache`) makes that a
+  one-time cost. Anything that scrapes should pass it — `fetchMoviesFromUrl` and `DiaryScraper`
+  both accept it, and the scheduler/watched-refresh call sites already do.
+- **A full watched-state refresh takes minutes and must never sit inside an HTTP request.**
+  `POST /api/users/:id/refresh-watched` returns `202` and runs detached (its rejection is caught and
+  logged — nothing is awaiting it); the SPA reads `User.lastWatchedRefreshAt` to see it land. It
+  previously awaited the whole thing and NPM's 60s gateway timeout turned a working refresh into a
+  red error banner.
 - Prisma is pinned to **v6** on purpose (v7 needs a native driver adapter + ESM; bad fit here).
 - **npm scripts that pass a regex containing `|` to Jest must quote it** (e.g.
   `--testPathIgnorePatterns=\"itest|livetest\"`) — npm runs scripts through a real shell (bash on

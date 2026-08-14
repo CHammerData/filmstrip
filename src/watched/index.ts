@@ -3,6 +3,7 @@ import prisma from '../db/client';
 import { fetchMoviesFromUrl, LetterboxdMovie } from '../scraper';
 import { DiaryScraper, DiaryEntry } from '../scraper/diary';
 import { createJellyfinClient, getWatchedTmdbIds as getJellyfinWatchedTmdbIds } from '../api/jellyfin';
+import { createFilmCache } from '../films/cache';
 import logger from '../util/logger';
 
 /** This user's Letterboxd watched set, scraped from their public /films/ page. Empty (not
@@ -15,7 +16,7 @@ async function getLetterboxdWatchedTmdbIds(user: User, settings: Settings): Prom
       `https://letterboxd.com/${user.letterboxdUsername}/films/`,
       undefined,
       undefined,
-      { flaresolverrUrl: settings.flaresolverrUrl }
+      { flaresolverrUrl: settings.flaresolverrUrl, filmCache: createFilmCache() }
     );
     return new Set(
       movies
@@ -35,6 +36,7 @@ async function getLetterboxdDiaryEntries(user: User, settings: Settings): Promis
   try {
     return await new DiaryScraper(user.letterboxdUsername, {
       flaresolverrUrl: settings.flaresolverrUrl,
+      filmCache: createFilmCache(),
     }).getEntries();
   } catch (e: any) {
     logger.error(`Error scraping Letterboxd diary for "${user.letterboxdUsername}": ${e?.message ?? e}`);

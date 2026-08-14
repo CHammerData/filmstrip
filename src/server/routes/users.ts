@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client';
 import prisma from '../../db/client';
 import { forceReconcileWatched } from '../../scheduler';
 import { asyncHandler, parseBody, parseId, notFound, conflict } from '../http';
+import logger from '../../util/logger';
 
 // Same rule as /api/me: the username flows into a scrape URL, so reject path-bearing / oversized
 // values. null clears it. Kept in sync with src/server/routes/me.ts.
@@ -77,13 +78,25 @@ export function usersRouter(): Router {
   // Admin-triggered "check watched now" (Users page): force this user's watched-state cache to
   // refresh immediately, then reconcile every removeOnWatch list they own against it, rather than
   // waiting for the next scheduled refresh tick + that list's own next sync.
+  //
+  // Accepted-and-detached, not awaited. A full refresh walks the user's whole Letterboxd history --
+  // measured at ~6 minutes for a 2,000-film account on its first run -- which no reverse proxy will
+  // hold a connection open for (NPM's 60s gateway timeout turned a working refresh into a red error
+  // banner). The client polls User.lastWatchedRefreshAt to see it land.
   router.post(
     '/:id/refresh-watched',
     asyncHandler(async (req, res) => {
       const id = parseId(req.params.id);
       const user = await prisma.user.findUnique({ where: { id } });
       if (!user) throw notFound(`User id=${id} not found.`);
-      res.json(await forceReconcileWatched(id));
+
+      res.status(202).json({ status: 'started', userId: id, startedAt: new Date().toISOString() });
+
+      // Detached: nothing is awaiting this, so it must swallow its own failures or it would surface
+      // as an unhandled rejection long after the response went out.
+      void forceReconcileWatched(id).catch((e) => {
+        logger.error(`Background watched refresh for user id=${id} failed: ${e instanceof Error ? e.message : e}`);
+      });
     })
   );
 

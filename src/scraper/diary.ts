@@ -3,6 +3,7 @@ import Bluebird from 'bluebird';
 import { LETTERBOXD_BASE_URL } from '.';
 import { fetchWithRetry, SCRAPE_CONCURRENCY, ScrapeHttpOptions } from './http';
 import { getMovie } from './movie';
+import { isFilmLink } from './resolve';
 import logger from '../util/logger';
 
 /** One diary-logged viewing, resolved to a stable film identity. */
@@ -82,7 +83,7 @@ export class DiaryScraper {
         const day = parseInt(dayText, 10);
         const link = row.find('[data-item-link]').first().attr('data-item-link');
 
-        if (!link || currentMonth === null || currentYear === null || isNaN(day)) {
+        if (!isFilmLink(link) || currentMonth === null || currentYear === null || isNaN(day)) {
           logger.debug('Skipping diary row: missing date or film link.');
           return;
         }

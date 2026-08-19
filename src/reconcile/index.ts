@@ -8,6 +8,7 @@ import {
   deleteMovie,
 } from '../api/radarr';
 import { createJellyfinClient, deleteCollection } from '../api/jellyfin';
+import { getDiaryWatchedDates } from '../watched';
 import { transitionMovie, logMovieEvent } from '../movieState';
 import logger from '../util/logger';
 
@@ -51,6 +52,25 @@ async function hasOrdinaryClaim(movieId: number): Promise<boolean> {
     where: { ...LIVE_CLAIM_WHERE, movieId, list: { enabled: true, removeOnWatch: false } },
   });
   return !!claim;
+}
+
+/**
+ * Which single user's lists ever added this film, if there's exactly one -- lets a non-admin see
+ * and resolve deletion requests for films only their own lists ever added, without seeing/touching
+ * anyone else's. Looks at *every* `ListMovie` row ever created for the movie, not just
+ * currently-present ones -- a `left_list`/`watched` request's triggering list still has its row
+ * intact. Returns null when zero or more than one distinct owner is found -- including the edge
+ * case where the sole contributing list has since been deleted (its `ListMovie` rows cascade away
+ * with it, `deleteList` above), which degrades to admin-only visibility rather than guessing,
+ * matching how the rest of this module derives everything from current DB state.
+ */
+export async function getSoleOwnerUserId(movieId: number): Promise<number | null> {
+  const rows = await prisma.listMovie.findMany({
+    where: { movieId },
+    select: { list: { select: { userId: true } } },
+  });
+  const owners = new Set(rows.map((r) => r.list.userId));
+  return owners.size === 1 ? [...owners][0] : null;
 }
 
 interface DeletionCandidate {
@@ -593,4 +613,67 @@ export async function dropKeepStatus(movieId: number): Promise<void> {
       data: { movieId, reason: 'manual_reopen', triggeredByListId: null, status: 'pending' },
     });
   });
+}
+
+/**
+ * Admin escape hatch: bring a `pre_existing` film (a Seerr/manual Radarr add that Filmstrip found
+ * on a list) under Filmstrip's management. Only reachable from `pre_existing` -- the provenance
+ * keystone (DESIGN.md §2) still holds for every other state, so this is the one deliberate crack in
+ * it, same spirit as `dropKeepStatus` is for `kept`. After the transition to `added`, runs the exact
+ * reconciliation a normal sync would already have done for this one film, right now, instead of
+ * waiting for the next sync of whichever list(s) claim it:
+ * - zero current claims -> evaluate it for deletion immediately (reason `left_list`), same as a
+ *   film that had already left every list it was ever wanted on;
+ * - otherwise, for each enabled `removeOnWatch` list currently claiming it, run `reconcileWatched`
+ *   for that one list -- if the owner's diary already shows a watch date postdating this list's own
+ *   claim (`ListMovie.firstSeenAt`), the film is queued for deletion (reason `watched`)
+ *   immediately, rather than sitting managed-but-stale until that list's next sync.
+ * An `unwatchedOnly` list's claim needs no special-casing here: its `ListMovie` row already exists
+ * with `presentOnList: true` (unwatchedOnly only ever filters *new* adds at scrape time --
+ * `src/scheduler/index.ts` -- never an already-tracked claim), so `hasClaim`/`LIVE_CLAIM_WHERE`
+ * already count it once the film is `added` -- exactly the "exception" the feature calls for,
+ * with no extra code. Don't re-add a watched-state check here later; it would be redundant.
+ */
+export async function convertToManaged(movieId: number): Promise<{ queued: boolean }> {
+  const movie = await prisma.movie.findUnique({ where: { id: movieId } });
+  if (!movie) throw new Error(`Movie id=${movieId} not found.`);
+  if (movie.state !== 'pre_existing') {
+    throw new Error(`Movie id=${movieId} is not pre_existing (state=${movie.state}).`);
+  }
+
+  await prisma.$transaction((tx) =>
+    transitionMovie(tx, movieId, 'added', {
+      type: 'converted_to_managed',
+      detail: 'Manually converted from pre_existing by an admin',
+    })
+  );
+
+  if (!(await hasClaim(movieId))) {
+    await evaluateForDeletion(movieId, {
+      reason: 'left_list',
+      triggeredByListId: null,
+      requireNotWanted: true,
+    });
+  } else {
+    const removeOnWatchClaims = await prisma.listMovie.findMany({
+      where: { ...LIVE_CLAIM_WHERE, movieId, list: { enabled: true, removeOnWatch: true } },
+      include: { list: { include: { user: true } } },
+    });
+    const checkedListIds = new Set<number>();
+    for (const lm of removeOnWatchClaims) {
+      if (checkedListIds.has(lm.list.id)) continue;
+      checkedListIds.add(lm.list.id);
+      try {
+        const diaryWatchedDates = await getDiaryWatchedDates(lm.list.userId);
+        await reconcileWatched(lm.list, diaryWatchedDates);
+      } catch (e: any) {
+        logger.error(
+          `Convert-to-managed: failed checking removeOnWatch list id=${lm.list.id} for movie id=${movieId}: ${e?.message ?? e}`
+        );
+      }
+    }
+  }
+
+  const after = await prisma.movie.findUnique({ where: { id: movieId } });
+  return { queued: after?.state === 'deletion_queued' };
 }

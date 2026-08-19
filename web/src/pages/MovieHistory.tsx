@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { get, post, ApiError, MovieEventType, MovieHistory as MovieHistoryData } from '../api';
+import { get, post, ApiError, ConvertToManagedResult, MovieEventType, MovieHistory as MovieHistoryData } from '../api';
 import { useLoad } from '../useLoad';
 import { StateBadge } from '../movieState';
 import { useAuth } from '../auth';
@@ -16,6 +16,7 @@ const EVENT_LABELS: Record<MovieEventType, string> = {
   radarr_add_failed: 'Radarr add failed',
   added_to_radarr: 'Added to Radarr',
   already_in_radarr: 'Already in Radarr',
+  converted_to_managed: 'Converted to Filmstrip control',
   deletion_queued: 'Queued for deletion',
   deletion_queue_cancelled: 'Deletion cancelled',
   deleted: 'Deleted',
@@ -34,6 +35,9 @@ export default function MovieHistory() {
   const { me } = useAuth();
   const [dropError, setDropError] = useState<string | null>(null);
   const [dropping, setDropping] = useState(false);
+  const [convertError, setConvertError] = useState<string | null>(null);
+  const [convertResult, setConvertResult] = useState<string | null>(null);
+  const [converting, setConverting] = useState(false);
 
   async function dropKeep() {
     setDropError(null);
@@ -45,6 +49,25 @@ export default function MovieHistory() {
       setDropError(e instanceof ApiError ? e.message : 'Action failed.');
     } finally {
       setDropping(false);
+    }
+  }
+
+  async function convert() {
+    setConvertError(null);
+    setConvertResult(null);
+    setConverting(true);
+    try {
+      const result = await post<ConvertToManagedResult>(`/movies/${id}/convert`);
+      setConvertResult(
+        result.queued
+          ? 'Converted — immediately queued for deletion review (already watched, on a remove-on-watch list).'
+          : 'Converted to Filmstrip control.'
+      );
+      await history.reload();
+    } catch (e) {
+      setConvertError(e instanceof ApiError ? e.message : 'Action failed.');
+    } finally {
+      setConverting(false);
     }
   }
 
@@ -86,6 +109,21 @@ export default function MovieHistory() {
                 Drop keep status
               </button>
               {dropError && <div className="error">{dropError}</div>}
+            </div>
+          )}
+
+          {me?.isAdmin && history.data.movie.state === 'pre_existing' && (
+            <div style={{ marginBottom: 16 }}>
+              <button disabled={converting} onClick={convert}>
+                Convert to Filmstrip control
+              </button>
+              <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                Brings a pre-existing (Seerr/manual) film under Filmstrip's management. If it's on a
+                remove-on-watch list already watched since that list added it, it's immediately
+                queued for deletion review.
+              </p>
+              {convertError && <div className="error">{convertError}</div>}
+              {convertResult && <p className="muted">{convertResult}</p>}
             </div>
           )}
 

@@ -27,7 +27,7 @@ export default function App() {
           <NavLink to="/lists">Lists</NavLink>
           <NavLink to="/movies">Movies</NavLink>
           <NavLink to="/history">History</NavLink>
-          {isAdmin && <NavLink to="/deletions">Deletions</NavLink>}
+          <NavLink to="/deletions">Deletions</NavLink>
           {isAdmin && <NavLink to="/users">Users</NavLink>}
           {isAdmin && <NavLink to="/settings">Settings</NavLink>}
         </nav>
@@ -48,7 +48,7 @@ export default function App() {
           <Route path="/movies" element={<Movies />} />
           <Route path="/movies/:id" element={<MovieHistory />} />
           <Route path="/history" element={<SyncHistory />} />
-          {isAdmin && <Route path="/deletions" element={<Deletions />} />}
+          <Route path="/deletions" element={<Deletions />} />
           {isAdmin && <Route path="/users" element={<Users />} />}
           {isAdmin && <Route path="/settings" element={<Settings />} />}
           <Route path="*" element={<Navigate to="/lists" replace />} />

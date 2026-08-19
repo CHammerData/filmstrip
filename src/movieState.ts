@@ -38,6 +38,7 @@ export type MovieEventType =
   | 'radarr_add_failed'
   | 'added_to_radarr'
   | 'already_in_radarr'
+  | 'converted_to_managed'
   | 'deletion_queued'
   | 'deletion_queue_cancelled'
   | 'deleted'

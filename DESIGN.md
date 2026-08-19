@@ -290,11 +290,19 @@ since neither can distinguish "just watched" from "watched years ago."
   `getOwnerWatchedTmdbIds` union (presence-only, no dates needed).
 - `removeOnWatch` — reads the diary-date cache instead (`getDiaryWatchedDates`), since it needs a
   real date. For each film a `removeOnWatch` list currently claims, it queues the film (and logs a
-  `watch_dropped` claim-drop event, §4) only if: the diary date is real *and* postdates this list's
-  own `ListMovie.firstSeenAt` for the film (so a stale pre-list watch, or a presence-only
-  aggregate/Jellyfin watch, never triggers it), *and* no other enabled, non-`removeOnWatch` list
-  still ordinarily claims the film (that list's plain claim takes precedence — the film isn't
-  queued until every interested party agrees it should go on watch).
+  `watch_dropped` claim-drop event, §4) only if: the film is still `Movie.state === 'added'` (once
+  it's left `added` for any reason there's nothing left for this list to drop), the diary date is
+  real *and* postdates this list's own `ListMovie.firstSeenAt` for the film (so a stale pre-list
+  watch, or a presence-only aggregate/Jellyfin watch, never triggers it), *and* no other enabled,
+  non-`removeOnWatch` list still ordinarily claims the film (that list's plain claim takes
+  precedence — the film isn't queued until every interested party agrees it should go on watch). A
+  film that's still `added` and still meets the drop condition is *retried* every sync — a prior
+  attempt may have failed to actually queue it for a reason `evaluateForDeletion` itself logs
+  (a foreign Radarr tag, a stale/missing `radarrMovieId`, or Radarr being briefly unreachable) — but
+  the `watch_dropped` `MovieEvent` is only logged once per retry streak: if the film's most recent
+  event is already this same list's `watch_dropped`, the log is skipped (it isn't new information),
+  though the retry itself always still runs. Without that check, a film stuck on a permanent block
+  (e.g. a foreign tag) logged an identical `watch_dropped` row every single sync, forever.
 
 ## 8. Jellyfin integration **[M4 ✅, makeCollection unverified live]**
 

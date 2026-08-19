@@ -210,7 +210,8 @@ model MovieEvent {
 
   /// seen_on_list | left_list | list_deleted | list_deactivated | watch_dropped |
   /// restored_to_list | radarr_add_failed | added_to_radarr | already_in_radarr |
-  /// deletion_queued | deletion_queue_cancelled | deleted | kept | revived | backfilled
+  /// converted_to_managed | deletion_queued | deletion_queue_cancelled | deleted | kept |
+  /// revived | backfilled
   type   String
   detail String?
 

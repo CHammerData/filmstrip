@@ -41,6 +41,10 @@ jest.mock('../util/logger', () => ({
   warn: jest.fn(),
   error: jest.fn(),
 }));
+jest.mock('../watched', () => ({
+  __esModule: true,
+  getDiaryWatchedDates: jest.fn(),
+}));
 
 import {
   reconcileList,
@@ -51,9 +55,12 @@ import {
   applyPermanenceClaims,
   handleListDisabled,
   dropKeepStatus,
+  convertToManaged,
+  getSoleOwnerUserId,
 } from './index';
 import { getMovieById, getAllTags, setMonitored, deleteMovie } from '../api/radarr';
 import { deleteCollection } from '../api/jellyfin';
+import { getDiaryWatchedDates } from '../watched';
 import { ListWithUser } from '../db/config';
 
 const now = new Date('2026-01-01T00:00:00Z');
@@ -901,5 +908,145 @@ describe('dropKeepStatus', () => {
     mockPrisma.movie.findUnique.mockResolvedValue(null);
 
     await expect(dropKeepStatus(1)).rejects.toThrow(/not found/);
+  });
+});
+
+describe('getSoleOwnerUserId', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('returns the single user when every ListMovie row belongs to that user\'s lists', async () => {
+    mockPrisma.listMovie.findMany.mockResolvedValue([{ list: { userId: 1 } }, { list: { userId: 1 } }]);
+
+    await expect(getSoleOwnerUserId(1)).resolves.toBe(1);
+  });
+
+  it('returns null when the film has been added by more than one user\'s lists', async () => {
+    mockPrisma.listMovie.findMany.mockResolvedValue([{ list: { userId: 1 } }, { list: { userId: 2 } }]);
+
+    await expect(getSoleOwnerUserId(1)).resolves.toBeNull();
+  });
+
+  it('returns null when there are no ListMovie rows at all (e.g. the sole list was deleted)', async () => {
+    mockPrisma.listMovie.findMany.mockResolvedValue([]);
+
+    await expect(getSoleOwnerUserId(1)).resolves.toBeNull();
+  });
+});
+
+describe('convertToManaged', () => {
+  const before = new Date('2025-06-01T00:00:00Z');
+  const after = new Date('2026-06-01T00:00:00Z');
+
+  /** Feed successive calls to movie.findUnique a fixed sequence of states (the last one repeats
+   *  for any call beyond the list) -- convertToManaged/evaluateForDeletion/reconcileWatched each
+   *  re-read the movie at different points, so a single static mock can't distinguish them. */
+  function mockMovieStates(...states: string[]) {
+    let i = 0;
+    mockPrisma.movie.findUnique.mockImplementation(() =>
+      Promise.resolve(makeMovie({ state: states[Math.min(i++, states.length - 1)] }))
+    );
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockPrisma.settings.findUnique.mockResolvedValue(makeSettings());
+    mockPrisma.user.findMany.mockResolvedValue([{ tag: 'chris' }]); // getKnownTagLabels, via evaluateForDeletion
+    mockPrisma.list.findMany.mockResolvedValue([{ extraTags: null }]);
+    mockPrisma.listMovie.findFirst.mockResolvedValue(null); // hasClaim/hasOrdinaryClaim: none, by default
+    mockPrisma.listMovie.findMany.mockResolvedValue([]); // no removeOnWatch claiming lists, by default
+    mockPrisma.deletionRequest.create.mockResolvedValue({});
+    (getMovieById as jest.Mock).mockResolvedValue({ id: 500, title: 'A Movie', tags: [] });
+    (getAllTags as jest.Mock).mockResolvedValue([{ id: 1, label: 'chris' }]);
+    (setMonitored as jest.Mock).mockResolvedValue(undefined);
+    (getDiaryWatchedDates as jest.Mock).mockResolvedValue(new Map());
+  });
+
+  it('throws if the movie does not exist', async () => {
+    mockPrisma.movie.findUnique.mockResolvedValue(null);
+
+    await expect(convertToManaged(1)).rejects.toThrow(/not found/);
+  });
+
+  it('throws if the movie is not pre_existing', async () => {
+    mockPrisma.movie.findUnique.mockResolvedValue(makeMovie({ state: 'added' }));
+
+    await expect(convertToManaged(1)).rejects.toThrow(/not pre_existing/);
+    expect(mockPrisma.movie.update).not.toHaveBeenCalled();
+  });
+
+  it('transitions the film to added and logs converted_to_managed', async () => {
+    mockMovieStates('pre_existing', 'added'); // initial load, then the final re-fetch for the result
+    mockPrisma.listMovie.findFirst.mockResolvedValue({ id: 2 }); // hasClaim: an ordinary claim exists
+
+    const result = await convertToManaged(1);
+
+    expect(mockPrisma.movie.update).toHaveBeenCalledWith({ where: { id: 1 }, data: { state: 'added' } });
+    expect(mockPrisma.movieEvent.create).toHaveBeenCalledWith({
+      data: {
+        movieId: 1,
+        type: 'converted_to_managed',
+        detail: 'Manually converted from pre_existing by an admin',
+      },
+    });
+    expect(result).toEqual({ queued: false });
+  });
+
+  it('needs no special handling for an existing unwatchedOnly claim -- it already counts via hasClaim', async () => {
+    mockMovieStates('pre_existing', 'added');
+    mockPrisma.listMovie.findFirst.mockResolvedValue({ id: 2 }); // hasClaim: true (the unwatchedOnly list's row)
+    mockPrisma.listMovie.findMany.mockResolvedValue([]); // no removeOnWatch lists claiming it
+
+    const result = await convertToManaged(1);
+
+    expect(getDiaryWatchedDates).not.toHaveBeenCalled();
+    expect(mockPrisma.deletionRequest.create).not.toHaveBeenCalled();
+    expect(result).toEqual({ queued: false });
+  });
+
+  it('immediately queues for deletion (reason left_list) when the film has zero current claims', async () => {
+    mockMovieStates('pre_existing', 'added', 'added', 'deletion_queued');
+    // listMovie.findFirst defaults to null (beforeEach) -- hasClaim is false.
+
+    const result = await convertToManaged(1);
+
+    expect(mockPrisma.deletionRequest.create).toHaveBeenCalledWith({
+      data: { movieId: 1, reason: 'left_list', triggeredByListId: null, status: 'pending' },
+    });
+    expect(result).toEqual({ queued: true });
+  });
+
+  it('immediately queues for deletion (reason watched) when a claiming removeOnWatch list already has a stale diary watch', async () => {
+    mockMovieStates('pre_existing', 'added', 'added', 'deletion_queued');
+    // hasClaim: true (first call only) -- hasOrdinaryClaim, checked later inside reconcileWatched,
+    // falls back to the null default so the date check below actually runs.
+    mockPrisma.listMovie.findFirst.mockResolvedValueOnce({ id: 2 });
+    mockPrisma.listMovie.findMany
+      .mockResolvedValueOnce([{ list: makeList({ removeOnWatch: true }) }]) // convertToManaged's own query
+      .mockResolvedValueOnce([{ movieId: 1, firstSeenAt: before, movie: { tmdbId: 100 } }]); // reconcileWatched's own query
+    (getDiaryWatchedDates as jest.Mock).mockResolvedValue(new Map([[100, after]]));
+
+    const result = await convertToManaged(1);
+
+    expect(getDiaryWatchedDates).toHaveBeenCalledWith(1);
+    expect(mockPrisma.deletionRequest.create).toHaveBeenCalledWith({
+      data: { movieId: 1, reason: 'watched', triggeredByListId: 10, status: 'pending' },
+    });
+    expect(result).toEqual({ queued: true });
+  });
+
+  it('does not queue when a claiming removeOnWatch list has no diary watch postdating its claim', async () => {
+    mockMovieStates('pre_existing', 'added');
+    mockPrisma.listMovie.findFirst.mockResolvedValueOnce({ id: 2 }); // hasClaim: true; hasOrdinaryClaim falls back to null
+    mockPrisma.listMovie.findMany
+      .mockResolvedValueOnce([{ list: makeList({ removeOnWatch: true }) }])
+      .mockResolvedValueOnce([{ movieId: 1, firstSeenAt: after, movie: { tmdbId: 100 } }]);
+    (getDiaryWatchedDates as jest.Mock).mockResolvedValue(new Map([[100, before]])); // watch predates the claim
+
+    const result = await convertToManaged(1);
+
+    expect(mockPrisma.deletionRequest.create).not.toHaveBeenCalled();
+    expect(result).toEqual({ queued: false });
   });
 });

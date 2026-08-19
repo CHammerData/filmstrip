@@ -61,10 +61,13 @@ function requestLogger(req: Request, res: Response, next: NextFunction): void {
  * bind a port. All routes live under /api.
  *
  * Auth (M6): a Jellyfin login mints a DB-backed session cookie. Everything except /api/health and
- * POST /api/auth/login requires a session (requireAuth). Connection config, user management, the
- * deletion queue, and global sync are admin-only (requireAdmin). Lists are ownership-scoped: any
- * authenticated user can read them, but creating/editing/deleting/syncing a list requires being its
- * owner or an admin (enforced in listsRouter). /api/me lets a user set their own Letterboxd username.
+ * POST /api/auth/login requires a session (requireAuth). Connection config, user management, and
+ * global sync are admin-only (requireAdmin). Lists are ownership-scoped: any authenticated user can
+ * read them, but creating/editing/deleting/syncing a list requires being its owner or an admin
+ * (enforced in listsRouter). The deletion queue is ownership-scoped the same way: any authenticated
+ * user can GET/approve/keep, narrowed inside deletionsRouter to requests for films only their own
+ * lists ever added; an admin sees/resolves everything. /api/me lets a user set their own Letterboxd
+ * username.
  */
 export function createApp(): Express {
   const app = express();
@@ -83,7 +86,9 @@ export function createApp(): Express {
   app.use('/api/lists', requireAuth, listsRouter());
   app.use('/api/radarr', requireAuth, radarrRouter());
   app.use('/api/movies', requireAuth, moviesRouter());
-  app.use('/api/deletions', requireAuth, requireAdmin, deletionsRouter());
+  // Deletions: open to any authenticated user, but scoped inside deletionsRouter to films only
+  // their own lists ever added -- admins alone see/resolve everything.
+  app.use('/api/deletions', requireAuth, deletionsRouter());
   app.use('/api/sync-runs', requireAuth, syncRunsRouter());
   app.use('/api/sync', requireAuth, requireAdmin, syncRouter());
 

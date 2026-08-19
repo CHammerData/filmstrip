@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { get, post, ApiError, DeletionRequest } from '../api';
 import { useLoad } from '../useLoad';
+import { useAuth } from '../auth';
 
 const STATUSES = ['pending', 'approved', 'kept'] as const;
 
@@ -9,6 +10,8 @@ export default function Deletions() {
   const reqs = useLoad<DeletionRequest[]>(() => get(`/deletions?status=${status}`), [status]);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
+  const { me } = useAuth();
+  const isAdmin = Boolean(me?.isAdmin);
 
   async function resolve(id: number, action: 'approve' | 'keep') {
     setError(null);
@@ -29,6 +32,7 @@ export default function Deletions() {
       <p className="muted">
         Films that left every list Filmstrip added them from (or that the owner watched, with
         <em> remove-on-watch</em>). Approve to delete from Radarr, or keep to pin forever.
+        {!isAdmin && ' Showing only films that only your own lists ever added.'}
       </p>
 
       <div className="row" style={{ marginBottom: 12 }}>

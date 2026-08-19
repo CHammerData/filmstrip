@@ -171,6 +171,17 @@ Module layout:
   longer a per-list toggle). `dropKeepStatus(movieId)` is the manual escape hatch: reopens a `kept`
   film with zero current claims into `deletion_queued` (reason `manual_reopen`). `DeletionRequest.
   reason` ∈ `left_list | watched | list_deleted | list_deactivated | manual_reopen`.
+  `convertToManaged(movieId)` is the admin escape hatch for the other side of the provenance
+  keystone: brings a `pre_existing` film under Filmstrip's management (`state` → `added`), then runs
+  the same reconciliation a sync would already have done for that one film right now — zero current
+  claims queues it immediately (reason `left_list`); an enabled `removeOnWatch` list already
+  claiming it gets `reconcileWatched` called for real right away, so a stale diary watch queues it
+  (reason `watched`) instead of waiting for that list's next sync. An `unwatchedOnly` claim needs no
+  special-casing — its `ListMovie` row already exists, so `hasClaim` already counts it. Throws if
+  the movie isn't `pre_existing`. `getSoleOwnerUserId(movieId)` looks at every `ListMovie` row ever
+  created for a film and returns the single owning user's id if there is exactly one (used to scope
+  non-admin deletion-queue access — see `src/server/routes/deletions.ts` below); null on zero or
+  multiple owners, which reads as admin-only.
 - **`src/server/`** — the REST API (M5) + GUI auth (M6). `app.ts` exports `createApp()` (an Express
   app, no `listen` — so tests drive it via supertest and `src/index.ts` binds the port; it also
   serves `web/dist` when that build exists, with an Express-5 `/*splat` catch-all for SPA
@@ -182,13 +193,18 @@ Module layout:
   `GET /` and `GET /:id/history` both include the film's current **claims**
   (`{listId, listLabel}[]`, DESIGN.md §5) alongside `sources`/history; `GET /:id/history` is a film's
   full `MovieEvent` log, oldest first, 404 if the id doesn't exist (DESIGN.md §4); `POST
-  /:id/drop-keep` (admin-only, via `requireAdmin` applied to that one route) calls `dropKeepStatus`.
-  `lists.ts` rejects `permanence` combined with `unwatchedOnly`/`removeOnWatch` on both create and
-  update (effective values = patch merged over the existing row / schema defaults), and calls
-  `handleListDisabled` after a `PATCH` flips `enabled` true→false. Routers are thin — validate with
-  zod, then call prisma or the existing scheduler/reconcile/auth functions. Everything under `/api`
-  needs a session except `/api/health` and `POST /api/auth/login`; settings/users/deletions/
-  global-sync are admin-only. Prisma P2002/P2025 → 409/404.
+  /:id/drop-keep` (admin-only, via `requireAdmin` applied to that one route) calls `dropKeepStatus`;
+  `POST /:id/convert` (admin-only) calls `convertToManaged`, returning `{id, queued}` so the GUI can
+  report whether it landed straight in the deletion queue. `deletions.ts` is no longer admin-only at
+  the mount point (`app.ts`) — any authenticated user can `GET`/`approve`/`keep`, but a non-admin's
+  `GET` is filtered, and a non-admin's `approve`/`keep` 403s, to requests for films whose sole owner
+  (`getSoleOwnerUserId`, `src/reconcile/index.ts`) is that user; an admin sees/resolves everything,
+  unfiltered. `lists.ts` rejects `permanence` combined with `unwatchedOnly`/`removeOnWatch` on both
+  create and update (effective values = patch merged over the existing row / schema defaults), and
+  calls `handleListDisabled` after a `PATCH` flips `enabled` true→false. Routers are thin — validate
+  with zod, then call prisma or the existing scheduler/reconcile/auth functions. Everything under
+  `/api` needs a session except `/api/health` and `POST /api/auth/login`; settings/users/global-sync
+  are admin-only (deletions is ownership-scoped instead, per above). Prisma P2002/P2025 → 409/404.
 - **`src/auth/`** — GUI auth logic (M6): `login()` (Jellyfin `authenticateByName` → find-or-provision
   a linked `User` → create a `Session`), `validateSession()`, `logout()`. Sessions are DB-backed
   (`Session` model), opaque token in an httpOnly cookie, 30-day expiry.
@@ -201,10 +217,18 @@ Module layout:
   watched" button (`POST /users/:id/refresh-watched`) disabled when the user has neither a Letterboxd
   username nor a Jellyfin id linked (nothing to check yet). Movies and MovieHistory both
   show a film's current claiming lists and, when `state === 'kept'` with zero claims, an admin-only
-  "Drop keep status" button (`POST /movies/:id/drop-keep`). `/movies/:id` (MovieHistory) is the app's
+  "Drop keep status" button (`POST /movies/:id/drop-keep`); when `state === 'pre_existing'`, an
+  admin-only "Convert to Filmstrip control" button (`POST /movies/:id/convert`) reports back whether
+  the film landed straight in the deletion queue. The Movies page also filters by owner, claiming
+  list, and list type (derived client-side from each row's `sources`/`claims`, same as the existing
+  Radarr-status/state dropdowns) and sorts by clicking any column header (toggles ascending/
+  descending; a fresh column resets to ascending). `/movies/:id` (MovieHistory) is the app's
   first param-based route, reached via a `Link` from a film's title on the Movies page — the first
   in-content navigation in the app (everywhere else only the topbar `NavLink`s move between pages).
-  Admin-only pages/actions are hidden from non-admins (`useAuth().me.isAdmin`), gated server-side too.
+  Deletions is visible to every authenticated user now (not just admins) — the server-side scoping
+  in `deletions.ts` is what actually narrows a non-admin's view, not a client-side hide. Admin-only
+  pages/actions (Users, Settings) are still hidden from non-admins (`useAuth().me.isAdmin`), gated
+  server-side too.
 - **`src/index.ts`** — boots `startScheduler()` **and** the Express API (`createApp().listen(PORT)`).
   **`src/cli.ts`** / **`src/db/seed.ts`** — operator entry points.
 
@@ -283,12 +307,15 @@ plain `http://melchior.home:3004` drops it and can't log in. FlareSolverr (`http
 already runs in that same stack and is what `Settings.flaresolverrUrl` should point at.
 
 Deferred refinements (tracked, not built): per-user list-ownership scoping (any authed user sees all
-lists); Quick Connect login; rewiring `unwatchedOnly` onto the `WatchedFilm` cache (still a live
+lists — the deletion queue is now scoped by film ownership, per above, but lists themselves are
+not); Quick Connect login; rewiring `unwatchedOnly` onto the `WatchedFilm` cache (still a live
 per-call scrape — only `removeOnWatch` reads the cache so far); building `web/` in CI; a
 periodic live-scrape smoke test (unit tests mock Letterboxd HTML, so a markup change can't be caught
 by them); validating `makeCollection` against a real-media Jellyfin library.
 
 GitHub workflows: `ci.yml` (backend typecheck + unit tests) runs on every push/PR; `live-api-test.yml`
 (real Radarr/Jellyfin containers) runs on PRs touching the API client files or via `workflow_dispatch`;
-`docker.yml` builds/pushes the image but stays manual (`workflow_dispatch`) until Docker Hub
-secrets/namespace are set. Neither CI job builds `web/` yet.
+`docker.yml` publishes `chrischammer/filmstrip` to Docker Hub automatically whenever a GitHub Release
+is published (`DOCKERHUB_NAMESPACE`/`DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` are configured; also
+runnable manually via `workflow_dispatch`) — see README "Publishing" for the cut-a-release steps
+(bump `package.json`, tag `vX.Y.Z`, publish the Release). Neither CI job builds `web/` yet.

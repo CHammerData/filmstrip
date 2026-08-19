@@ -27,7 +27,9 @@ is captured at add time: Radarr returns *created* vs *already exists*.
 - If a film pre-existed (Seerr/manual), its state is `'pre_existing'` instead, and it's **never**
   eligible for removal, even while it sits on a Filmstrip list.
 
-This is the load-bearing invariant for everything in §5–§6.
+This is the load-bearing invariant for everything in §5–§6. The one deliberate crack in it is a
+human, explicit override — `convertToManaged` (§6) — never something the keeper-rule triggers on
+its own.
 
 ## 3. Data model
 
@@ -231,7 +233,11 @@ per-list toggle — but never without review.
    watchable during the review window.
 2. **Review.** The pending queue is the operator surface: `npm run cli deletions` / the Deletions
    page in the GUI. The Movies page and a film's history page also show its **current claiming
-   lists** live (DESIGN.md §5).
+   lists** live (DESIGN.md §5). The queue is ownership-scoped, not admin-only: `getSoleOwnerUserId`
+   (`src/reconcile/index.ts`) looks at every `ListMovie` row a film has ever had and, if exactly one
+   user's lists are behind all of them, that user can see and resolve its request; anything with
+   zero or multiple owners (including a film whose sole contributing list has since been deleted,
+   cascading its rows away) is admin-only. Admins always see and can resolve every request.
 3. **Resolve** via `npm run cli approve <id>` / `npm run cli keep <id>` (or the equivalent GUI
    buttons):
    - **Approve** → delete from Radarr and its file. Request → `approved`; `Movie.state` →
@@ -253,6 +259,19 @@ watch-through: blast through the list, then triage what earned a permanent spot.
 server-side in `src/server/routes/lists.ts` and client-side by disabling the conflicting toggles in
 the GUI) — a list that's meant to keep everything it claims forever can't also be conditioned on
 watch-state.
+
+**Manual conversion.** `convertToManaged` (`POST /movies/:id/convert`, admin-only) is the mirror
+image of `dropKeepStatus` on the *other* side of the provenance keystone (§2): it brings a
+`pre_existing` film (a Seerr/manual Radarr add that Filmstrip found on a list) under Filmstrip's
+management, transitioning it to `added`. Rather than leaving the film to catch up at the next sync,
+it immediately runs the same reconciliation a sync would have: zero current claims queues it for
+review right away (reason `left_list`); an enabled `removeOnWatch` list already claiming it gets its
+`reconcileWatched` check run for real, so a diary watch that already postdates that list's claim
+queues it (reason `watched`) on the spot instead of sitting managed-but-stale for up to a full sync
+interval. A claim from an `unwatchedOnly` list needs no special handling — its `ListMovie` row
+already exists (`unwatchedOnly` only ever filters *new* adds at scrape time, never an
+already-tracked claim), so it counts as a live claim the moment the film is `added`, same as any
+other list. Throws if the film isn't currently `pre_existing`.
 
 *Future option:* per-list **grace period** to auto-approve after N days of inaction. Default manual.
 
@@ -307,9 +326,12 @@ and we need `jellyfinUserId` anyway.
   logout/admin can kill a session before it expires. First login **auto-provisions** a Filmstrip
   `User` linked by `jellyfinUserId` (tag derived from the display name).
 - **Roles [M6 ✅]:** Jellyfin's `Policy.IsAdministrator` → Filmstrip admin, cached on the session.
-  Admins get settings, user management, the deletion queue, and global sync; any authenticated user
-  can manage lists and read sync history. Scoping regular users to *only their own* lists is a
-  tracked refinement, not yet enforced.
+  Admins get settings, user management, and global sync; any authenticated user can manage lists and
+  read sync history. The deletion queue is ownership-scoped rather than admin-only: a non-admin sees
+  and can approve/keep only requests for films that only their own lists ever added
+  (`getSoleOwnerUserId`, §5); an admin sees/resolves everything. Scoping *lists themselves* to only
+  their own owner (a non-admin currently sees every list) is a tracked refinement, not yet enforced.
+  (§6 has the deletion-queue scoping detail.)
 - Identity (Jellyfin) is separate from the **Letterboxd handle**, which each user sets in profile.
 
 The middleware (`src/server/auth.ts`) gates everything under `/api` except `/api/health` and

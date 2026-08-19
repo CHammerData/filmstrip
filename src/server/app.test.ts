@@ -8,7 +8,7 @@ const mockPrisma = {
   movie: { findMany: jest.fn(), findUnique: jest.fn() },
   listMovie: { findMany: jest.fn() },
   movieEvent: { findMany: jest.fn() },
-  deletionRequest: { findMany: jest.fn() },
+  deletionRequest: { findMany: jest.fn(), findUnique: jest.fn() },
   syncRun: { findMany: jest.fn() },
 };
 
@@ -27,6 +27,8 @@ jest.mock('../reconcile', () => ({
   deleteList: jest.fn(),
   handleListDisabled: jest.fn(),
   dropKeepStatus: jest.fn(),
+  convertToManaged: jest.fn(),
+  getSoleOwnerUserId: jest.fn(),
 }));
 jest.mock('../auth', () => ({
   __esModule: true,
@@ -40,7 +42,15 @@ jest.mock('../util/logger', () => ({ debug: jest.fn(), info: jest.fn(), warn: je
 import request from 'supertest';
 import { createApp, createHeadlessApp } from './app';
 import { syncListById, syncAll, syncDue, forceReconcileWatched } from '../scheduler';
-import { approveDeletion, keepDeletion, deleteList, handleListDisabled, dropKeepStatus } from '../reconcile';
+import {
+  approveDeletion,
+  keepDeletion,
+  deleteList,
+  handleListDisabled,
+  dropKeepStatus,
+  convertToManaged,
+  getSoleOwnerUserId,
+} from '../reconcile';
 import { validateSession, login, logout } from '../auth';
 import { JellyfinAuthError } from '../api/jellyfin.errors';
 
@@ -553,14 +563,21 @@ describe('me (self-service)', () => {
   });
 });
 
-describe('deletions (admin)', () => {
-  it('GET defaults to pending', async () => {
-    mockPrisma.deletionRequest.findMany.mockResolvedValue([{ id: 1, status: 'pending' }]);
+describe('deletions', () => {
+  beforeEach(() => {
+    // assertCanResolveRequest always loads the request first (to find its movieId), even for an
+    // admin who'll short-circuit past the ownership check -- give every test a row to find.
+    mockPrisma.deletionRequest.findUnique.mockResolvedValue({ id: 4, movieId: 1 });
+  });
+
+  it('GET defaults to pending (admin: unfiltered)', async () => {
+    mockPrisma.deletionRequest.findMany.mockResolvedValue([{ id: 1, movieId: 1, status: 'pending' }]);
     const res = await request(app).get('/api/deletions').set('Cookie', ADMIN);
     expect(res.status).toBe(200);
     expect(mockPrisma.deletionRequest.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { status: 'pending' } })
     );
+    expect(res.body).toEqual([{ id: 1, movieId: 1, status: 'pending' }]);
   });
 
   it('GET rejects an invalid status', async () => {
@@ -568,7 +585,31 @@ describe('deletions (admin)', () => {
     expect(res.status).toBe(400);
   });
 
-  it('POST /:id/approve resolves the request', async () => {
+  it('GET requires a session', async () => {
+    const res = await request(app).get('/api/deletions');
+    expect(res.status).toBe(401);
+  });
+
+  it('GET for a non-admin returns only requests for films only their own lists ever added', async () => {
+    mockPrisma.deletionRequest.findMany.mockResolvedValue([
+      { id: 1, movieId: 1, status: 'pending' }, // sole-owned by USER (id=2)
+      { id: 2, movieId: 2, status: 'pending' }, // sole-owned by someone else
+      { id: 3, movieId: 3, status: 'pending' }, // multiple owners -- ambiguous, admin-only
+    ]);
+    mockPrisma.listMovie.findMany.mockResolvedValue([
+      { movieId: 1, list: { userId: 2 } },
+      { movieId: 2, list: { userId: 1 } },
+      { movieId: 3, list: { userId: 1 } },
+      { movieId: 3, list: { userId: 2 } },
+    ]);
+
+    const res = await request(app).get('/api/deletions').set('Cookie', USER);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([{ id: 1, movieId: 1, status: 'pending' }]);
+  });
+
+  it('POST /:id/approve resolves the request (admin)', async () => {
     (approveDeletion as jest.Mock).mockResolvedValue(undefined);
     const res = await request(app).post('/api/deletions/4/approve').set('Cookie', ADMIN);
     expect(res.status).toBe(200);
@@ -581,11 +622,55 @@ describe('deletions (admin)', () => {
     expect(res.status).toBe(409);
   });
 
-  it('POST /:id/keep pins and resolves', async () => {
+  it('POST /:id/approve 404s when the request does not exist', async () => {
+    mockPrisma.deletionRequest.findUnique.mockResolvedValue(null);
+    const res = await request(app).post('/api/deletions/999/approve').set('Cookie', ADMIN);
+    expect(res.status).toBe(404);
+    expect(approveDeletion).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/approve succeeds for a non-admin who is the film\'s sole owner', async () => {
+    (getSoleOwnerUserId as jest.Mock).mockResolvedValue(2); // USER is id=2
+    (approveDeletion as jest.Mock).mockResolvedValue(undefined);
+    const res = await request(app).post('/api/deletions/4/approve').set('Cookie', USER);
+    expect(res.status).toBe(200);
+    expect(approveDeletion).toHaveBeenCalledWith(4);
+  });
+
+  it('POST /:id/approve is forbidden for a non-admin who is not the film\'s sole owner', async () => {
+    (getSoleOwnerUserId as jest.Mock).mockResolvedValue(1); // owned by someone else
+    const res = await request(app).post('/api/deletions/4/approve').set('Cookie', USER);
+    expect(res.status).toBe(403);
+    expect(approveDeletion).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/approve is forbidden for a non-admin when ownership is ambiguous', async () => {
+    (getSoleOwnerUserId as jest.Mock).mockResolvedValue(null);
+    const res = await request(app).post('/api/deletions/4/approve').set('Cookie', USER);
+    expect(res.status).toBe(403);
+    expect(approveDeletion).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/keep pins and resolves (admin)', async () => {
     (keepDeletion as jest.Mock).mockResolvedValue(undefined);
     const res = await request(app).post('/api/deletions/4/keep').set('Cookie', ADMIN);
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ id: 4, status: 'kept' });
+  });
+
+  it('POST /:id/keep succeeds for a non-admin who is the film\'s sole owner', async () => {
+    (getSoleOwnerUserId as jest.Mock).mockResolvedValue(2);
+    (keepDeletion as jest.Mock).mockResolvedValue(undefined);
+    const res = await request(app).post('/api/deletions/4/keep').set('Cookie', USER);
+    expect(res.status).toBe(200);
+    expect(keepDeletion).toHaveBeenCalledWith(4);
+  });
+
+  it('POST /:id/keep is forbidden for a non-admin who is not the film\'s sole owner', async () => {
+    (getSoleOwnerUserId as jest.Mock).mockResolvedValue(1);
+    const res = await request(app).post('/api/deletions/4/keep').set('Cookie', USER);
+    expect(res.status).toBe(403);
+    expect(keepDeletion).not.toHaveBeenCalled();
   });
 });
 
@@ -651,6 +736,39 @@ describe('movies', () => {
     (dropKeepStatus as jest.Mock).mockRejectedValue(new Error('Movie id=1 is still claimed by an enabled list.'));
 
     const res = await request(app).post('/api/movies/1/drop-keep').set('Cookie', ADMIN);
+
+    expect(res.status).toBe(409);
+  });
+
+  it('POST /:id/convert succeeds for an admin and echoes queued', async () => {
+    (convertToManaged as jest.Mock).mockResolvedValue({ queued: true });
+
+    const res = await request(app).post('/api/movies/1/convert').set('Cookie', ADMIN);
+
+    expect(res.status).toBe(200);
+    expect(convertToManaged).toHaveBeenCalledWith(1);
+    expect(res.body).toEqual({ id: 1, queued: true });
+  });
+
+  it('POST /:id/convert is forbidden for a non-admin', async () => {
+    const res = await request(app).post('/api/movies/1/convert').set('Cookie', USER);
+
+    expect(res.status).toBe(403);
+    expect(convertToManaged).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/convert maps "not found" to 404', async () => {
+    (convertToManaged as jest.Mock).mockRejectedValue(new Error('Movie id=1 not found.'));
+
+    const res = await request(app).post('/api/movies/1/convert').set('Cookie', ADMIN);
+
+    expect(res.status).toBe(404);
+  });
+
+  it('POST /:id/convert maps "not pre_existing" to 409', async () => {
+    (convertToManaged as jest.Mock).mockRejectedValue(new Error('Movie id=1 is not pre_existing (state=added).'));
+
+    const res = await request(app).post('/api/movies/1/convert').set('Cookie', ADMIN);
 
     expect(res.status).toBe(409);
   });

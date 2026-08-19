@@ -155,6 +155,7 @@ export type MovieEventType =
   | 'radarr_add_failed'
   | 'added_to_radarr'
   | 'already_in_radarr'
+  | 'converted_to_managed'
   | 'deletion_queued'
   | 'deletion_queue_cancelled'
   | 'deleted'
@@ -222,6 +223,12 @@ export interface RefreshWatchedStarted {
   status: 'started';
   userId: number;
   startedAt: string;
+}
+
+// Result of POST /movies/:id/convert -- the "convert to Filmstrip control" admin action.
+export interface ConvertToManagedResult {
+  id: number;
+  queued: boolean;
 }
 
 export interface Me {

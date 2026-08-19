@@ -2,7 +2,7 @@ import { Router } from 'express';
 import prisma from '../../db/client';
 import { asyncHandler, notFound, conflict, badRequest, parseId, HttpError } from '../http';
 import { createRadarrClient, getAllMovies, RadarrMovieResource } from '../../api/radarr';
-import { dropKeepStatus } from '../../reconcile';
+import { dropKeepStatus, convertToManaged } from '../../reconcile';
 import { requireAdmin } from '../auth';
 import logger from '../../util/logger';
 
@@ -161,6 +161,26 @@ export function moviesRouter(): Router {
         throw badRequest(e.message);
       }
       res.json({ id, state: 'deletion_queued' });
+    })
+  );
+
+  // Admin escape hatch: bring a pre_existing film (Seerr/manual Radarr add, found on a Filmstrip
+  // list) under Filmstrip's management. Admin-only, matching drop-keep's protective class.
+  router.post(
+    '/:id/convert',
+    requireAdmin,
+    asyncHandler(async (req, res) => {
+      const id = parseId(req.params.id);
+      let result;
+      try {
+        result = await convertToManaged(id);
+      } catch (e) {
+        if (!(e instanceof Error) || e instanceof HttpError) throw e;
+        if (/not found/i.test(e.message)) throw notFound(e.message);
+        if (/not pre_existing/i.test(e.message)) throw conflict(e.message);
+        throw badRequest(e.message);
+      }
+      res.json({ id, queued: result.queued });
     })
   );
 

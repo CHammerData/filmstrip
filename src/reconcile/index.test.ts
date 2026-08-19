@@ -5,7 +5,7 @@ const mockPrisma: any = {
   user: { findMany: jest.fn() },
   list: { findMany: jest.fn(), findUnique: jest.fn(), delete: jest.fn() },
   movie: { findUnique: jest.fn(), update: jest.fn() },
-  movieEvent: { create: jest.fn() },
+  movieEvent: { create: jest.fn(), findFirst: jest.fn() },
   listMovie: { findMany: jest.fn(), findFirst: jest.fn(), update: jest.fn() },
   deletionRequest: {
     findFirst: jest.fn(),
@@ -444,6 +444,7 @@ describe('reconcileWatched', () => {
     mockPrisma.settings.findUnique.mockResolvedValue(makeSettings());
     mockPrisma.deletionRequest.create.mockResolvedValue({});
     mockPrisma.listMovie.findFirst.mockResolvedValue(null); // hasOrdinaryClaim: no other claim, by default
+    mockPrisma.movieEvent.findFirst.mockResolvedValue(null); // no prior watch_dropped event, by default
     (getMovieById as jest.Mock).mockResolvedValue({ id: 500, title: 'A Movie', tags: [] });
     (getAllTags as jest.Mock).mockResolvedValue([{ id: 1, label: 'chris' }]);
     (setMonitored as jest.Mock).mockResolvedValue(undefined);
@@ -457,7 +458,7 @@ describe('reconcileWatched', () => {
 
   it('logs watch_dropped and queues a claimed film watched after this list started tracking it', async () => {
     mockPrisma.listMovie.findMany.mockResolvedValue([
-      { movieId: 1, firstSeenAt: before, movie: { tmdbId: 100 } },
+      { movieId: 1, firstSeenAt: before, movie: { tmdbId: 100, state: 'added' } },
     ]);
     mockPrisma.movie.findUnique.mockResolvedValue(makeMovie());
 
@@ -479,7 +480,7 @@ describe('reconcileWatched', () => {
 
   it('ignores a film with no diary watch date', async () => {
     mockPrisma.listMovie.findMany.mockResolvedValue([
-      { movieId: 1, firstSeenAt: before, movie: { tmdbId: 100 } },
+      { movieId: 1, firstSeenAt: before, movie: { tmdbId: 100, state: 'added' } },
     ]);
 
     await reconcileWatched(makeList(), new Map([[999, after]]));
@@ -490,7 +491,7 @@ describe('reconcileWatched', () => {
 
   it('ignores a diary watch date that predates this list tracking the film', async () => {
     mockPrisma.listMovie.findMany.mockResolvedValue([
-      { movieId: 1, firstSeenAt: after, movie: { tmdbId: 100 } },
+      { movieId: 1, firstSeenAt: after, movie: { tmdbId: 100, state: 'added' } },
     ]);
 
     await reconcileWatched(makeList(), new Map([[100, before]]));
@@ -503,7 +504,7 @@ describe('reconcileWatched', () => {
     const addedLaterSameDay = new Date('2026-06-01T14:00:00Z');
     const diaryMidnightSameDay = new Date('2026-06-01T00:00:00Z');
     mockPrisma.listMovie.findMany.mockResolvedValue([
-      { movieId: 1, firstSeenAt: addedLaterSameDay, movie: { tmdbId: 100 } },
+      { movieId: 1, firstSeenAt: addedLaterSameDay, movie: { tmdbId: 100, state: 'added' } },
     ]);
     mockPrisma.movie.findUnique.mockResolvedValue(makeMovie());
 
@@ -516,7 +517,7 @@ describe('reconcileWatched', () => {
 
   it('defers to another enabled, non-removeOnWatch list that still ordinarily claims the film', async () => {
     mockPrisma.listMovie.findMany.mockResolvedValue([
-      { movieId: 1, firstSeenAt: before, movie: { tmdbId: 100 } },
+      { movieId: 1, firstSeenAt: before, movie: { tmdbId: 100, state: 'added' } },
     ]);
     mockPrisma.listMovie.findFirst.mockResolvedValue({ id: 2 }); // hasOrdinaryClaim: yes
 
@@ -526,15 +527,57 @@ describe('reconcileWatched', () => {
     expect(mockPrisma.movieEvent.create).not.toHaveBeenCalled();
   });
 
-  it('does not queue a kept film (but the aggregate keeper-rule is what no-ops, not the drop itself)', async () => {
+  it('does not log or attempt evaluation for a film that has already left added (e.g. kept) -- nothing left to drop', async () => {
     mockPrisma.listMovie.findMany.mockResolvedValue([
-      { movieId: 1, firstSeenAt: before, movie: { tmdbId: 100 } },
+      { movieId: 1, firstSeenAt: before, movie: { tmdbId: 100, state: 'kept' } },
     ]);
-    mockPrisma.movie.findUnique.mockResolvedValue(makeMovie({ state: 'kept' }));
 
     await reconcileWatched(makeList(), new Map([[100, after]]));
 
     expect(mockPrisma.deletionRequest.create).not.toHaveBeenCalled();
+    expect(mockPrisma.movieEvent.create).not.toHaveBeenCalled();
+    expect(mockPrisma.movie.findUnique).not.toHaveBeenCalled(); // never even reaches evaluateForDeletion
+  });
+
+  it('does not re-log an identical watch_dropped event on a retry, but still retries the drop itself', async () => {
+    // Still 'added' -- a prior sync's drop attempt didn't stick (e.g. a foreign Radarr tag, a
+    // stale radarrMovieId, or Radarr being briefly unreachable -- evaluateForDeletion logs its
+    // own specific reason and returns without throwing in each case). The most recent MovieEvent
+    // for this film is already this same list's watch_dropped -- that's not new information.
+    mockPrisma.listMovie.findMany.mockResolvedValue([
+      { movieId: 1, firstSeenAt: before, movie: { tmdbId: 100, state: 'added' } },
+    ]);
+    mockPrisma.movieEvent.findFirst.mockResolvedValue({ type: 'watch_dropped', listId: 10 });
+    mockPrisma.movie.findUnique.mockResolvedValue(makeMovie()); // still 'added' -- e.g. a foreign tag keeps blocking it
+    (getMovieById as jest.Mock).mockResolvedValue({ id: 500, title: 'A Movie', tags: [1, 99] });
+    (getAllTags as jest.Mock).mockResolvedValue([
+      { id: 1, label: 'chris' },
+      { id: 99, label: 'seerr' }, // foreign tag -- evaluateForDeletion will no-op every time
+    ]);
+
+    await reconcileWatched(makeList(), new Map([[100, after]]));
+
+    expect(mockPrisma.movieEvent.create).not.toHaveBeenCalled();
+    expect(setMonitored).not.toHaveBeenCalled(); // evaluateForDeletion still ran and still declined
+  });
+
+  it('logs again if the most recent event is a different list\'s watch_dropped', async () => {
+    mockPrisma.listMovie.findMany.mockResolvedValue([
+      { movieId: 1, firstSeenAt: before, movie: { tmdbId: 100, state: 'added' } },
+    ]);
+    mockPrisma.movieEvent.findFirst.mockResolvedValue({ type: 'watch_dropped', listId: 999 }); // a different list
+    mockPrisma.movie.findUnique.mockResolvedValue(makeMovie());
+
+    await reconcileWatched(makeList(), new Map([[100, after]]));
+
+    expect(mockPrisma.movieEvent.create).toHaveBeenCalledWith({
+      data: {
+        movieId: 1,
+        type: 'watch_dropped',
+        listId: 10,
+        detail: 'owner watched this film; list "Chris\'s watchlist" (removeOnWatch) drops its claim',
+      },
+    });
   });
 });
 
@@ -957,6 +1000,7 @@ describe('convertToManaged', () => {
     mockPrisma.listMovie.findFirst.mockResolvedValue(null); // hasClaim/hasOrdinaryClaim: none, by default
     mockPrisma.listMovie.findMany.mockResolvedValue([]); // no removeOnWatch claiming lists, by default
     mockPrisma.deletionRequest.create.mockResolvedValue({});
+    mockPrisma.movieEvent.findFirst.mockResolvedValue(null); // no prior watch_dropped event, by default
     (getMovieById as jest.Mock).mockResolvedValue({ id: 500, title: 'A Movie', tags: [] });
     (getAllTags as jest.Mock).mockResolvedValue([{ id: 1, label: 'chris' }]);
     (setMonitored as jest.Mock).mockResolvedValue(undefined);
@@ -1024,7 +1068,7 @@ describe('convertToManaged', () => {
     mockPrisma.listMovie.findFirst.mockResolvedValueOnce({ id: 2 });
     mockPrisma.listMovie.findMany
       .mockResolvedValueOnce([{ list: makeList({ removeOnWatch: true }) }]) // convertToManaged's own query
-      .mockResolvedValueOnce([{ movieId: 1, firstSeenAt: before, movie: { tmdbId: 100 } }]); // reconcileWatched's own query
+      .mockResolvedValueOnce([{ movieId: 1, firstSeenAt: before, movie: { tmdbId: 100, state: 'added' } }]); // reconcileWatched's own query
     (getDiaryWatchedDates as jest.Mock).mockResolvedValue(new Map([[100, after]]));
 
     const result = await convertToManaged(1);
@@ -1041,7 +1085,7 @@ describe('convertToManaged', () => {
     mockPrisma.listMovie.findFirst.mockResolvedValueOnce({ id: 2 }); // hasClaim: true; hasOrdinaryClaim falls back to null
     mockPrisma.listMovie.findMany
       .mockResolvedValueOnce([{ list: makeList({ removeOnWatch: true }) }])
-      .mockResolvedValueOnce([{ movieId: 1, firstSeenAt: after, movie: { tmdbId: 100 } }]);
+      .mockResolvedValueOnce([{ movieId: 1, firstSeenAt: after, movie: { tmdbId: 100, state: 'added' } }]);
     (getDiaryWatchedDates as jest.Mock).mockResolvedValue(new Map([[100, before]])); // watch predates the claim
 
     const result = await convertToManaged(1);

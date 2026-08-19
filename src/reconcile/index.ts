@@ -328,10 +328,16 @@ export async function reconcileWatched(list: ListWithUser, diaryWatchedDates: Ma
 
   const current = await prisma.listMovie.findMany({
     where: { listId: list.id, ...LIVE_CLAIM_WHERE },
-    select: { movieId: true, firstSeenAt: true, movie: { select: { tmdbId: true } } },
+    select: { movieId: true, firstSeenAt: true, movie: { select: { tmdbId: true, state: true } } },
   });
 
   for (const lm of current) {
+    // Once this movie has left `added` (queued/deleted/kept/pre_existing/wanted -- any reason),
+    // there is nothing left for this check to drop; re-running it every sync forever for a film
+    // that's already resolved is exactly the "identical event every sync" spam this used to
+    // produce once evaluateForDeletion's own gate started silently no-opping underneath it.
+    if (lm.movie.state !== 'added') continue;
+
     const watchedAt = diaryWatchedDates.get(lm.movie.tmdbId);
     if (!watchedAt) continue;
     const firstSeenDay = Date.UTC(
@@ -343,13 +349,26 @@ export async function reconcileWatched(list: ListWithUser, diaryWatchedDates: Ma
     if (await hasOrdinaryClaim(lm.movieId)) continue;
 
     try {
-      await prisma.$transaction((tx) =>
-        logMovieEvent(tx, lm.movieId, {
-          type: 'watch_dropped',
-          listId: list.id,
-          detail: `owner watched this film; list "${list.label}" (removeOnWatch) drops its claim`,
-        })
-      );
+      // Still `added` and still meets the drop condition: either this is the first time, or a
+      // prior attempt couldn't actually queue it (a foreign Radarr tag, a stale radarrMovieId,
+      // Radarr unreachable -- evaluateForDeletion logs the specific reason and returns without
+      // throwing) and this sync is retrying. Retrying is correct -- a transient failure should
+      // get another shot -- but re-logging an identical watch_dropped MovieEvent on every one of
+      // those retries, forever, is not: only log it when it's new information, i.e. the most
+      // recent event for this film isn't already this same list's watch_dropped.
+      const lastEvent = await prisma.movieEvent.findFirst({
+        where: { movieId: lm.movieId },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (lastEvent?.type !== 'watch_dropped' || lastEvent.listId !== list.id) {
+        await prisma.$transaction((tx) =>
+          logMovieEvent(tx, lm.movieId, {
+            type: 'watch_dropped',
+            listId: list.id,
+            detail: `owner watched this film; list "${list.label}" (removeOnWatch) drops its claim`,
+          })
+        );
+      }
       await evaluateForDeletion(lm.movieId, {
         reason: 'watched',
         triggeredByListId: list.id,

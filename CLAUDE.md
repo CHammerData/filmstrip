@@ -155,7 +155,11 @@ Module layout:
   where an overlapping manual sync + scheduler tick could otherwise double-create a request.
   `reconcileWatched(list, diaryWatchedDates)` logs a `watch_dropped` event and queues a claimed film
   once its diary date postdates this list's `firstSeenAt` for it and no ordinary claim remains
-  elsewhere (DESIGN.md §7). `applyPermanenceClaims(list)` pins every film a `permanence` list
+  elsewhere (DESIGN.md §7) — skips a film that's already left `added` (nothing left to drop), and,
+  for a film still `added` that keeps failing to actually queue (foreign tag, stale/missing
+  `radarrMovieId`, Radarr unreachable), retries the drop every sync but only logs `watch_dropped`
+  once per retry streak (skipped when the film's most recent event is already this same list's
+  `watch_dropped`) — previously it re-logged an identical event forever. `applyPermanenceClaims(list)` pins every film a `permanence` list
   currently claims (`added`/`deletion_queued`) straight to `kept`, every sync — live, not just at
   list-deletion — auto-resolving a pending request to `kept` when coming from `deletion_queued`.
   `handleListDisabled(list)` (called from the lists route the instant `enabled` flips false) logs

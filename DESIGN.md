@@ -195,6 +195,12 @@ candidate** only when **all** hold:
 
 A candidate is not deleted directly — it enters the approval queue (§6).
 
+If the candidate's `radarrMovieId` is missing — observed live: Radarr's create response didn't carry
+one back at add time, so `src/scheduler/index.ts` never persisted it, leaving the film `added` but
+with no way to ever look it up in Radarr again — `evaluateForDeletion` resolves it by tmdbId
+(`getMovieByTmdbId`, `src/api/radarr.ts`) and backfills it before continuing, rather than skipping the
+film forever (it previously did exactly that, permanently, logging the same warning every sync).
+
 `reconcileList` also restores `presentOnList` for a film that reappears in a later scrape after
 being marked gone — otherwise a single bad scrape (e.g. a bot-check/interstitial page returning
 HTTP 200 with only a handful of links) would sink a film out of its list's Jellyfin collection

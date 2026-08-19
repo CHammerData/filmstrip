@@ -34,6 +34,7 @@ import {
   addMovie,
   upsertMovies,
   getMovieById,
+  getMovieByTmdbId,
   getAllTags,
   setMonitored,
   deleteMovie,
@@ -441,6 +442,33 @@ describe('radarr API', () => {
       mockAxiosInstance.get.mockRejectedValueOnce(new Error('Network error'));
 
       const result = await getMovieById(client, 500);
+
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('getMovieByTmdbId', () => {
+    it('returns the first match, filtering server-side by tmdbId', async () => {
+      mockAxiosInstance.get.mockResolvedValueOnce({ data: [{ id: 500, title: 'A Movie', tmdbId: 100 }] });
+
+      const result = await getMovieByTmdbId(client, 100);
+
+      expect(result).toMatchObject({ id: 500, tmdbId: 100 });
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/api/v3/movie', { params: { tmdbId: 100 } });
+    });
+
+    it('returns null when Radarr has no movie with that tmdbId', async () => {
+      mockAxiosInstance.get.mockResolvedValueOnce({ data: [] });
+
+      const result = await getMovieByTmdbId(client, 100);
+
+      expect(result).toBeNull();
+    });
+
+    it('returns null on error rather than throwing', async () => {
+      mockAxiosInstance.get.mockRejectedValueOnce(new Error('Network error'));
+
+      const result = await getMovieByTmdbId(client, 100);
 
       expect(result).toBeNull();
     });

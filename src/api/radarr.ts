@@ -154,6 +154,22 @@ export async function getAllMovies(client: AxiosInstance): Promise<RadarrMovieRe
     return response.data;
 }
 
+/** Look up a movie already in Radarr by tmdbId -- Radarr's own filter (a point query, not a full
+ *  getAllMovies scan). Used to self-heal a Movie row that's `added` but somehow never recorded a
+ *  radarrMovieId (src/reconcile/index.ts's evaluateForDeletion): Radarr already has the film, this
+ *  just recovers its id instead of leaving the film permanently stuck. Null on no match or on any
+ *  request failure -- never throws. */
+export async function getMovieByTmdbId(client: AxiosInstance, tmdbId: number): Promise<RadarrMovieResource | null> {
+    try {
+        const response = await client.get('/api/v3/movie', { params: { tmdbId } });
+        const matches: RadarrMovieResource[] = response.data ?? [];
+        return matches[0] ?? null;
+    } catch (error: any) {
+        logger.error(`Error looking up Radarr movie by tmdbId=${tmdbId}: ${error?.message ?? error}`);
+        return null;
+    }
+}
+
 export async function getMovieById(client: AxiosInstance, id: number): Promise<RadarrMovieResource | null> {
     try {
         const response = await client.get(`/api/v3/movie/${id}`);

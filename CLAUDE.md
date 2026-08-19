@@ -79,8 +79,10 @@ Module layout:
   refresh cost ~3,500 film-page fetches and every list sync re-resolved every film on the list.
 - **`src/api/radarr.ts`** — reused/parameterized. `createRadarrClient({url, apiKey})` builds an axios
   client; `upsertMovies(client, movies, options)` adds movies and returns an `UpsertSummary` of
-  per-movie outcomes; `getMovieById`/`getAllTags`/`setMonitored`/`deleteMovie(client, id)` (always
-  deletes the file — no longer a caller-supplied flag) back the reconcile flow. No global/env reads.
+  per-movie outcomes; `getMovieById`/`getMovieByTmdbId` (a server-side-filtered point query, used to
+  self-heal a `Movie` row missing `radarrMovieId` — see reconcile below)/`getAllTags`/`setMonitored`/
+  `deleteMovie(client, id)` (always deletes the file — no longer a caller-supplied flag) back the
+  reconcile flow. No global/env reads.
 - **`src/api/jellyfin.ts`** — `createJellyfinClient({url, apiKey})`; `getWatchedTmdbIds` (per-user
   played movies), `getAllMovieProviderIds` (library-wide tmdbId→item-id map), and the BoxSet helpers:
   `findCollectionByName` (name search, only used to adopt a pre-existing/hand-created collection),
@@ -152,7 +154,11 @@ Module layout:
   `left_list`/`list_deleted`/`list_deactivated`/`manual_reopen` requests on *any* claim, `watched`
   requests only on an *ordinary* claim. `evaluateForDeletion`'s gate is `Movie.state === 'added'`,
   re-verified inside a transaction right before transitioning to `deletion_queued`, closing a race
-  where an overlapping manual sync + scheduler tick could otherwise double-create a request.
+  where an overlapping manual sync + scheduler tick could otherwise double-create a request. A film
+  missing `radarrMovieId` (observed live: Radarr's add response didn't carry one back, so
+  `src/scheduler/index.ts` never persisted it, leaving the film `added` but permanently unrecoverable)
+  is self-healed by looking it up via `getMovieByTmdbId` and backfilling the id, rather than skipping
+  it forever.
   `reconcileWatched(list, diaryWatchedDates)` logs a `watch_dropped` event and queues a claimed film
   once its diary date postdates this list's `firstSeenAt` for it and no ordinary claim remains
   elsewhere (DESIGN.md §7) — skips a film that's already left `added` (nothing left to drop), and,

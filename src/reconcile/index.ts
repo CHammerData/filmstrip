@@ -3,6 +3,7 @@ import { GLOBAL_TAG, parseExtraTags, ListWithUser } from '../db/config';
 import {
   createRadarrClient,
   getMovieById,
+  getMovieByTmdbId,
   getAllTags,
   setMonitored,
   deleteMovie,
@@ -98,15 +99,33 @@ async function evaluateForDeletion(movieId: number, candidate: DeletionCandidate
     if (await hasClaim(movieId)) return;
   }
 
-  if (!movie.radarrMovieId) {
-    logger.warn(`Movie id=${movieId} (tmdb=${movie.tmdbId}) has no radarrMovieId; skipping.`);
-    return;
+  const client = await radarrClientFromSettings();
+
+  let radarrMovieId = movie.radarrMovieId;
+  if (!radarrMovieId) {
+    // A movie can end up `added` with no radarrMovieId on record if Radarr's create response
+    // didn't carry one back at add time (src/scheduler/index.ts only persists it when the add
+    // result actually included one) -- observed live across several films on one instance, all
+    // stuck permanently `added` with this exact warning repeating every sync. Radarr genuinely has
+    // the film either way (that's how it got to `added` in the first place); resolve the id by
+    // tmdbId and backfill it rather than leaving the film unrecoverable.
+    const found = await getMovieByTmdbId(client, movie.tmdbId);
+    if (!found) {
+      logger.warn(
+        `Movie id=${movieId} (tmdb=${movie.tmdbId}) has no radarrMovieId and isn't found in Radarr by tmdbId; skipping.`
+      );
+      return;
+    }
+    radarrMovieId = found.id;
+    await prisma.movie.update({ where: { id: movieId }, data: { radarrMovieId } });
+    logger.info(
+      `Movie id=${movieId} (tmdb=${movie.tmdbId}) had no radarrMovieId on record; backfilled as id=${radarrMovieId} from Radarr.`
+    );
   }
 
-  const client = await radarrClientFromSettings();
-  const radarrMovie = await getMovieById(client, movie.radarrMovieId);
+  const radarrMovie = await getMovieById(client, radarrMovieId);
   if (!radarrMovie) {
-    logger.warn(`Movie id=${movieId} not found in Radarr (id=${movie.radarrMovieId}); skipping.`);
+    logger.warn(`Movie id=${movieId} not found in Radarr (id=${radarrMovieId}); skipping.`);
     return;
   }
 

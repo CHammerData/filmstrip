@@ -26,6 +26,7 @@ jest.mock('../api/radarr', () => ({
   __esModule: true,
   createRadarrClient: jest.fn(() => ({})),
   getMovieById: jest.fn(),
+  getMovieByTmdbId: jest.fn(),
   getAllTags: jest.fn(),
   setMonitored: jest.fn(),
   deleteMovie: jest.fn(),
@@ -58,7 +59,7 @@ import {
   convertToManaged,
   getSoleOwnerUserId,
 } from './index';
-import { getMovieById, getAllTags, setMonitored, deleteMovie } from '../api/radarr';
+import { getMovieById, getMovieByTmdbId, getAllTags, setMonitored, deleteMovie } from '../api/radarr';
 import { deleteCollection } from '../api/jellyfin';
 import { getDiaryWatchedDates } from '../watched';
 import { ListWithUser } from '../db/config';
@@ -407,6 +408,38 @@ describe('reconcileList', () => {
 
     await reconcileList(makeList(), new Set());
 
+    expect(setMonitored).not.toHaveBeenCalled();
+    expect(mockPrisma.deletionRequest.create).not.toHaveBeenCalled();
+  });
+
+  it('backfills a missing radarrMovieId by looking the film up in Radarr by tmdbId, then proceeds', async () => {
+    mockPrisma.listMovie.findMany.mockResolvedValue([
+      { id: 1, movieId: 1, presentOnList: true, movie: { tmdbId: 100 } },
+    ]);
+    mockPrisma.movie.findUnique.mockResolvedValue(makeMovie({ radarrMovieId: null }));
+    (getMovieByTmdbId as jest.Mock).mockResolvedValue({ id: 500, title: 'A Movie', tmdbId: 100, tags: [] });
+
+    await reconcileList(makeList(), new Set());
+
+    expect(getMovieByTmdbId).toHaveBeenCalledWith(expect.anything(), 100);
+    expect(mockPrisma.movie.update).toHaveBeenCalledWith({ where: { id: 1 }, data: { radarrMovieId: 500 } });
+    expect(getMovieById).toHaveBeenCalledWith(expect.anything(), 500);
+    expect(setMonitored).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ id: 500 }), false);
+    expect(mockPrisma.deletionRequest.create).toHaveBeenCalledWith({
+      data: { movieId: 1, reason: 'left_list', triggeredByListId: 10, status: 'pending' },
+    });
+  });
+
+  it('gives up (no crash, no queue) when radarrMovieId is missing and the film cannot be found in Radarr by tmdbId either', async () => {
+    mockPrisma.listMovie.findMany.mockResolvedValue([
+      { id: 1, movieId: 1, presentOnList: true, movie: { tmdbId: 100 } },
+    ]);
+    mockPrisma.movie.findUnique.mockResolvedValue(makeMovie({ radarrMovieId: null }));
+    (getMovieByTmdbId as jest.Mock).mockResolvedValue(null);
+
+    await expect(reconcileList(makeList(), new Set())).resolves.toBeUndefined();
+
+    expect(mockPrisma.movie.update).not.toHaveBeenCalled();
     expect(setMonitored).not.toHaveBeenCalled();
     expect(mockPrisma.deletionRequest.create).not.toHaveBeenCalled();
   });

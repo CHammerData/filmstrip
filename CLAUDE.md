@@ -83,7 +83,11 @@ Module layout:
   self-heal a `Movie` row missing `radarrMovieId` — see reconcile below)/`getAllTags`/`setMonitored`/
   `deleteMovie(client, id)` (always deletes the file — no longer a caller-supplied flag) back the
   reconcile flow. No global/env reads.
-- **`src/api/jellyfin.ts`** — `createJellyfinClient({url, apiKey})`; `getWatchedTmdbIds` (per-user
+- **`src/api/jellyfin.ts`** — `createJellyfinClient({url, apiKey})` (API key sent as
+  `Authorization: MediaBrowser Token="..."`, the standard header — **never** the legacy `X-Emby-Token`
+  / `X-Emby-Authorization` / `X-MediaBrowser-*` forms: Jellyfin 12 ships with legacy authorization
+  off and silently ignores them, which 400s `AuthenticateByName` and 401s everything else; the
+  standard header works on 10.x too, so there is no back-compat branch); `getWatchedTmdbIds` (per-user
   played movies), `getAllMovieProviderIds` (library-wide tmdbId→item-id map), and the BoxSet helpers:
   `findCollectionByName` (name search, only used to adopt a pre-existing/hand-created collection),
   `getCollectionById` (identity lookup, null on a 404 or any other fetch failure),

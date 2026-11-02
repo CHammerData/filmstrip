@@ -65,6 +65,12 @@ volumes:
   filmstrip-config:
 ```
 
+> **Jellyfin compatibility:** Filmstrip **0.2.19+** works with Jellyfin 10.x and 12.x. Jellyfin 12
+> turns off "legacy authorization" by default and stops reading the `X-Emby-Token` /
+> `X-Emby-Authorization` headers that releases up to 0.2.18 sent, so on Jellyfin 12 those older
+> releases can't log anyone in and every collection sync fails with a 401. Upgrade the image; no
+> settings change is needed.
+
 ## Run modes: gui vs headless
 
 `FILMSTRIP_MODE` (default `gui`) selects what the container runs:
@@ -284,6 +290,11 @@ Docker Hub's description API rejects the personal access token used for image pu
 - **"Radarr connection is not configured"** — `Settings.radarrUrl` / `radarrApiKey` are unset. Set
   them on the Settings page (gui) or via `RADARR_API_URL` / `RADARR_API_KEY` (headless).
 - **Quality profile errors** — the name must match Radarr exactly (case-sensitive).
+- **Login fails / collection sync 401s right after upgrading Jellyfin to 12** — Filmstrip 0.2.18 and
+  earlier sent the legacy `X-Emby-*` auth headers, which Jellyfin 12 ignores by default (its log shows
+  `Value cannot be null. (Parameter 'request.App')` on login). Upgrade to Filmstrip 0.2.19+, which
+  sends the standard `Authorization: MediaBrowser ...` header. Re-enabling "legacy authorization" in
+  Jellyfin's settings is the stopgap if you can't upgrade yet.
 - **No movies found** — confirm the Letterboxd list is public and the URL matches a supported shape.
 - **Only the first ~72 films of a list sync** — Letterboxd serves page 1 of a list to any client but
   gates page 2 onward on the request coming from a real browser, so the scrape stops where the 403s

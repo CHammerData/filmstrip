@@ -16,6 +16,7 @@ jest.mock('../util/logger', () => ({
   error: jest.fn(),
 }));
 
+import Axios from 'axios';
 import {
   createJellyfinClient,
   getWatchedTmdbIds,
@@ -38,7 +39,38 @@ describe('jellyfin API', () => {
     jest.clearAllMocks();
   });
 
+  describe('createJellyfinClient', () => {
+    // Jellyfin 12 drops the legacy X-Emby-Token header by default (legacy authorization off), so
+    // the API key must travel in the standard Authorization header.
+    it('sends the API key as a standard MediaBrowser Authorization header, not X-Emby-Token', () => {
+      createJellyfinClient({ url: 'http://localhost:8096', apiKey: 'test-key' });
+
+      expect(Axios.create).toHaveBeenCalledWith({
+        baseURL: 'http://localhost:8096',
+        headers: { Authorization: 'MediaBrowser Token="test-key"' },
+      });
+      const headers = (Axios.create as jest.Mock).mock.calls[0][0].headers;
+      expect(headers).not.toHaveProperty('X-Emby-Token');
+    });
+  });
+
   describe('authenticateByName', () => {
+    it('sends the client identity as a standard Authorization header, not X-Emby-Authorization', async () => {
+      mockAxiosInstance.post.mockResolvedValueOnce({ data: { User: { Id: 'jf-1', Name: 'Chris' } } });
+
+      await authenticateByName('http://localhost:8096', 'chris', 'pw');
+
+      expect(Axios.create).toHaveBeenCalledWith({
+        baseURL: 'http://localhost:8096',
+        headers: {
+          Authorization:
+            'MediaBrowser Client="Filmstrip", Device="Filmstrip Server", DeviceId="filmstrip-server", Version="1.0.0"',
+        },
+      });
+      const headers = (Axios.create as jest.Mock).mock.calls[0][0].headers;
+      expect(headers).not.toHaveProperty('X-Emby-Authorization');
+    });
+
     it('returns the user identity on success', async () => {
       mockAxiosInstance.post.mockResolvedValueOnce({
         data: { User: { Id: 'jf-1', Name: 'Chris', Policy: { IsAdministrator: true } }, AccessToken: 'tok' },

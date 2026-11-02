@@ -13,7 +13,10 @@ export function createJellyfinClient(conn: JellyfinConnection): AxiosInstance {
   return Axios.create({
     baseURL: conn.url,
     headers: {
-      'X-Emby-Token': conn.apiKey,
+      // The standard Jellyfin auth header. Jellyfin 12 disables "legacy authorization" by default
+      // and stops reading the old X-Emby-Token / X-MediaBrowser-Token headers; this form is honoured
+      // by both 10.x and 12.x.
+      Authorization: `MediaBrowser Token="${conn.apiKey}"`,
     },
   });
 }
@@ -39,7 +42,10 @@ export async function authenticateByName(
     baseURL: url,
     headers: {
       // Jellyfin requires this header on AuthenticateByName; the field values are arbitrary labels.
-      'X-Emby-Authorization':
+      // Sent as the standard `Authorization` header, not the legacy `X-Emby-Authorization` -- Jellyfin
+      // 12 ignores the legacy header by default and then 400s with "Value cannot be null
+      // (Parameter 'request.App')".
+      Authorization:
         'MediaBrowser Client="Filmstrip", Device="Filmstrip Server", DeviceId="filmstrip-server", Version="1.0.0"',
     },
   });

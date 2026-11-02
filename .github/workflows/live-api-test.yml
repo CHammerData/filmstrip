@@ -116,11 +116,11 @@ jobs:
           AUTH_HEADER='MediaBrowser Client="filmstrip-ci", Device="ci", DeviceId="filmstrip-ci-1", Version="1.0.0"'
           ACCESS_TOKEN=$(curl -sf -X POST "$JF/Users/AuthenticateByName" \
             -H "Content-Type: application/json" \
-            -H "X-Emby-Authorization: $AUTH_HEADER" \
+            -H "Authorization: $AUTH_HEADER" \
             -d '{"Username":"admin","Pw":"FilmstripCiTest123!"}' | jq -r '.AccessToken')
 
-          curl -sf -X POST "$JF/Auth/Keys?App=filmstrip-ci" -H "X-Emby-Token: $ACCESS_TOKEN"
-          API_KEY=$(curl -sf "$JF/Auth/Keys" -H "X-Emby-Token: $ACCESS_TOKEN" | jq -r '.Items[0].AccessToken')
+          curl -sf -X POST "$JF/Auth/Keys?App=filmstrip-ci" -H "Authorization: MediaBrowser Token=\"$ACCESS_TOKEN\""
+          API_KEY=$(curl -sf "$JF/Auth/Keys" -H "Authorization: MediaBrowser Token=\"$ACCESS_TOKEN\"" | jq -r '.Items[0].AccessToken')
           echo "JELLYFIN_TEST_API_KEY=$API_KEY" >> "$GITHUB_ENV"
 
       - name: Run live API tests

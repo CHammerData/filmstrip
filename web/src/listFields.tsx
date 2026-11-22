@@ -1,6 +1,6 @@
 // Shared per-list settings form used by both "Add a list" (advanced section) and "Edit list", so
 // the fields, help text, and Radarr-populated dropdowns stay in sync in one place.
-import { RadarrOptions } from './api';
+import { Me, RadarrOptions } from './api';
 
 /** The editable subset of a List. `List` is structurally a superset, so it satisfies this too. */
 export interface ListSettingsForm {
@@ -19,6 +19,21 @@ export interface ListSettingsForm {
   removeOnWatch: boolean;
   makeCollection: boolean;
   collectionNameOverride: string | null;
+}
+
+/** What a non-admin may set on their own lists (DESIGN.md §9a); null for an admin (no limits). The
+ *  server enforces the same rules -- this only keeps the form from offering what it would refuse. */
+export interface ListLimits {
+  profiles: '*' | string[];
+  maxListSize: number | null;
+}
+
+export function listLimitsFor(me: Me | null): ListLimits | null {
+  if (!me || me.isAdmin) return null;
+  const raw = me.user.qualityProfiles?.trim();
+  const profiles: '*' | string[] =
+    raw === '*' ? '*' : (raw ?? '').split(',').map((p) => p.trim()).filter((p) => p.length > 0);
+  return { profiles, maxListSize: me.user.maxListSize };
 }
 
 /** Sensible blank starting point for the Add form (all overrides null => inherit Settings). */
@@ -91,13 +106,23 @@ export function ListSettingsFields({
   form,
   set,
   radarrOptions,
+  limits = null,
 }: {
   form: ListSettingsForm;
   set: (patch: Partial<ListSettingsForm>) => void;
   radarrOptions: RadarrOptions | null;
+  limits?: ListLimits | null;
 }) {
   const configured = radarrOptions?.configured ?? false;
   const selectedTags = currentTags(form.extraTags);
+  const isAdmin = limits === null;
+  // A limited user sees only the profiles they may pick (plus the default, always allowed), and the
+  // one already on the list so an edit doesn't silently blank it.
+  const profiles = (radarrOptions?.qualityProfiles ?? []).filter(
+    (p) =>
+      isAdmin || limits.profiles === '*' || limits.profiles.includes(p.name) || p.name === form.qualityProfile
+  );
+  const cap = limits?.maxListSize ?? null;
 
   return (
     <>
@@ -115,7 +140,7 @@ export function ListSettingsFields({
               onChange={(e) => set({ qualityProfile: e.target.value || null })}
             >
               <option value="">(default)</option>
-              {radarrOptions!.qualityProfiles.map((p) => (
+              {profiles.map((p) => (
                 <option key={p.id} value={p.name}>
                   {p.name}
                 </option>
@@ -130,29 +155,31 @@ export function ListSettingsFields({
           )}
           <Help field="qualityProfile" />
         </label>
-        <label>
-          <span>Root folder</span>
-          {configured ? (
-            <select
-              value={form.rootFolderId ?? ''}
-              onChange={(e) => set({ rootFolderId: e.target.value || null })}
-            >
-              <option value="">(default)</option>
-              {radarrOptions!.rootFolders.map((f) => (
-                <option key={f.id} value={String(f.id)}>
-                  {f.path}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <input
-              value={form.rootFolderId ?? ''}
-              onChange={(e) => set({ rootFolderId: e.target.value || null })}
-              placeholder="(default)"
-            />
-          )}
-          <Help field="rootFolderId" />
-        </label>
+        {isAdmin && (
+          <label>
+            <span>Root folder</span>
+            {configured ? (
+              <select
+                value={form.rootFolderId ?? ''}
+                onChange={(e) => set({ rootFolderId: e.target.value || null })}
+              >
+                <option value="">(default)</option>
+                {radarrOptions!.rootFolders.map((f) => (
+                  <option key={f.id} value={String(f.id)}>
+                    {f.path}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                value={form.rootFolderId ?? ''}
+                onChange={(e) => set({ rootFolderId: e.target.value || null })}
+                placeholder="(default)"
+              />
+            )}
+            <Help field="rootFolderId" />
+          </label>
+        )}
         <label>
           <span>Min. availability</span>
           <select
@@ -166,44 +193,52 @@ export function ListSettingsFields({
           </select>
           <Help field="minimumAvailability" />
         </label>
-        <label className="span-2">
-          <span>Extra tags (comma-separated)</span>
-          <input
-            value={form.extraTags ?? ''}
-            onChange={(e) => set({ extraTags: e.target.value || null })}
-            placeholder="e.g. 4k, foreign"
-          />
-          {configured && radarrOptions!.tags.length > 0 && (
-            <span style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
-              {radarrOptions!.tags.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  className="secondary"
-                  style={{
-                    fontSize: 11,
-                    padding: '2px 8px',
-                    opacity: selectedTags.has(t.label) ? 1 : 0.6,
-                  }}
-                  onClick={() => set({ extraTags: toggleTag(form.extraTags, t.label) })}
-                >
-                  {selectedTags.has(t.label) ? '✓ ' : '+ '}
-                  {t.label}
-                </button>
-              ))}
-            </span>
-          )}
-          <Help field="extraTags" />
-        </label>
+        {isAdmin && (
+          <label className="span-2">
+            <span>Extra tags (comma-separated)</span>
+            <input
+              value={form.extraTags ?? ''}
+              onChange={(e) => set({ extraTags: e.target.value || null })}
+              placeholder="e.g. 4k, foreign"
+            />
+            {configured && radarrOptions!.tags.length > 0 && (
+              <span style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+                {radarrOptions!.tags.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    className="secondary"
+                    style={{
+                      fontSize: 11,
+                      padding: '2px 8px',
+                      opacity: selectedTags.has(t.label) ? 1 : 0.6,
+                    }}
+                    onClick={() => set({ extraTags: toggleTag(form.extraTags, t.label) })}
+                  >
+                    {selectedTags.has(t.label) ? '✓ ' : '+ '}
+                    {t.label}
+                  </button>
+                ))}
+              </span>
+            )}
+            <Help field="extraTags" />
+          </label>
+        )}
         <label>
           <span>Take amount</span>
           <input
             type="number"
             min={1}
+            max={cap ?? undefined}
             value={form.takeAmount ?? ''}
+            placeholder={cap ? String(cap) : undefined}
             onChange={(e) => set({ takeAmount: e.target.value ? Number(e.target.value) : null })}
           />
-          <Help field="takeAmount" />
+          {cap ? (
+            <span className="help">Your lists take at most {cap} films; blank takes {cap}.</span>
+          ) : (
+            <Help field="takeAmount" />
+          )}
         </label>
         <label>
           <span>Take strategy</span>
@@ -214,16 +249,18 @@ export function ListSettingsFields({
           </select>
           <Help field="takeStrategy" />
         </label>
-        <label>
-          <span>Check interval (min)</span>
-          <input
-            type="number"
-            min={1}
-            value={form.checkIntervalMin ?? ''}
-            onChange={(e) => set({ checkIntervalMin: e.target.value ? Number(e.target.value) : null })}
-          />
-          <Help field="checkIntervalMin" />
-        </label>
+        {isAdmin && (
+          <label>
+            <span>Check interval (min)</span>
+            <input
+              type="number"
+              min={1}
+              value={form.checkIntervalMin ?? ''}
+              onChange={(e) => set({ checkIntervalMin: e.target.value ? Number(e.target.value) : null })}
+            />
+            <Help field="checkIntervalMin" />
+          </label>
+        )}
         <label className="span-2">
           <span>Collection name override</span>
           <input

@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { LIST_ACCESS } from '../../db/policy';
 import prisma from '../../db/client';
 import { asyncHandler, parseBody } from '../http';
 import { isHttpUrl } from '../../util/url';
@@ -26,6 +27,8 @@ const patchSchema = z
     defaultMinimumAvailability: z.enum(['announced', 'inCinemas', 'released']),
     defaultCheckIntervalMin: z.number().int().positive(),
     dryRun: z.boolean(),
+    newUserListAccess: z.enum(LIST_ACCESS),
+    newUserMaxListSize: z.number().int().positive().nullable(),
   })
   .partial()
   .strict();

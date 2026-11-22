@@ -41,6 +41,11 @@ model Settings {
   /// user regardless of how many lists they own, not once per list per sync.
   watchedRefreshIntervalMin Int @default(1440) // 24h
 
+  /// What a newly provisioned (non-admin) user may do with lists -- copied onto User.listAccess /
+  /// User.maxListSize at first login, then changed per user on the Users page (DESIGN.md §9a).
+  newUserListAccess  String @default("approval") // none | approval | auto
+  newUserMaxListSize Int?   @default(50)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -60,6 +65,17 @@ model User {
   letterboxdUsername String?
   /// Jellyfin user id -- this user's playback history for the watched set + GUI auth link.
   jellyfinUserId     String? @unique
+
+  /// Per-user list policy (DESIGN.md §9a), enforced on the lists API for non-admin sessions and at
+  /// sync time for everyone:
+  /// - listAccess: none (can't add lists; existing ones stop syncing) | approval (a new list, or a
+  ///   changed URL, waits for an admin's approval before it syncs) | auto (syncs straight away).
+  /// - qualityProfiles: comma-separated Radarr profile names this user may pick for a list; "*" is
+  ///   any; null is the Settings default only.
+  /// - maxListSize: cap on films taken from any one of this user's lists; null is no cap.
+  listAccess      String  @default("approval")
+  qualityProfiles String?
+  maxListSize     Int?
 
   /// Last time this user's WatchedFilm rows were refreshed. Drives the decoupled watched-state
   /// scheduler (Settings.watchedRefreshIntervalMin) -- independent of any list's own sync.
@@ -107,6 +123,9 @@ model List {
   listType String
   label    String
   enabled  Boolean @default(true)
+  /// pending | approved | rejected (DESIGN.md §9a). Only approved lists sync. Lists from a user on
+  /// listAccess "approval" start pending; everything else starts approved.
+  approval String  @default("approved")
 
   // Per-list overrides (null => inherit from Settings).
   qualityProfile      String?
@@ -253,16 +272,18 @@ model ListMovie {
 /// One user's watched-state cache for one film (DESIGN.md §7). Refreshed independently of any
 /// list's own sync, on a global interval (Settings.watchedRefreshIntervalMin), once per user.
 /// unwatchedOnly only needs presence (has this user watched it at all, ever). removeOnWatch needs
-/// an actual date -- diary-sourced only; a watched-but-undiaried film can never trigger it, since
-/// there's no reliable way to tell "just watched" from "watched years ago, only just noticed."
+/// an actual date: from the diary, from Jellyfin's last-played date, or -- for a film marked
+/// watched on Letterboxd with no diary entry -- the time a refresh first saw it (never on a user's
+/// first refresh or in a burst; see refreshWatchedState). Undated rows are history and never
+/// trigger it.
 model WatchedFilm {
   id     Int  @id @default(autoincrement())
   user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
   userId Int
   tmdbId Int
 
-  /// The real diary-logged date, when Letterboxd has one. Null if the film is marked watched but
-  /// was never diary-logged (Letterboxd allows a bare watched-checkbox with no diary entry).
+  /// When it was watched, as best known (see above). Null for history: marked watched on
+  /// Letterboxd with no diary entry, or played in Jellyfin with no date, before Filmstrip noticed.
   watchedAt DateTime?
   /// letterboxd_diary | letterboxd_aggregate | jellyfin
   source    String

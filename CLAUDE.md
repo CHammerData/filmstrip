@@ -100,19 +100,26 @@ Module layout:
 - **`src/db/`** — `client.ts` (PrismaClient singleton) and `config.ts`
   (`resolveListConfig(list, settings)`: merges overrides over defaults, assembles tags as
   `[userTag, "letterboxd", ...extraTags]`, throws on missing Radarr connection / quality profile;
-  also exports `parseExtraTags`/`GLOBAL_TAG`, reused by reconcile's foreign-tag check).
+  also exports `parseExtraTags`/`GLOBAL_TAG`, reused by reconcile's foreign-tag check; applies the
+  owner's list policy at sync time — caps `take` at `maxListSize`, drops a profile the owner may no
+  longer use back to the default) and `policy.ts` (the per-user list policy, DESIGN.md §9a:
+  `allowedQualityProfiles`, `isQualityProfileAllowed`, `effectiveTake`, `isListSyncable`,
+  `initialApproval`, `newUserPolicy` — pure functions shared by the scheduler, the lists route and
+  login provisioning).
 - **`src/watched/index.ts`** — `getOwnerWatchedTmdbIds(user, settings)` (**@deprecated**, still used
   by `unwatchedOnly`): unions a user's live Letterboxd `/films/` scrape and Jellyfin watched set,
   presence-only. `refreshWatchedState(user, settings)` upserts the `WatchedFilm` cache from three
-  sources (diary — `src/scraper/diary.ts`, dated; aggregate `/films/`; Jellyfin), diary always
-  winning on a real date; `refreshDueUsers`/`startWatchedStateScheduler` run it per-user on
+  sources (diary — `src/scraper/diary.ts`, dated; aggregate `/films/`; Jellyfin via
+  `getWatchedMovies`, dated by `LastPlayedDate`), the most recent date winning and a cached date
+  never lost; an undated watch it has never seen before is dated *now* unless it's the user's first
+  refresh or more than `NEW_WATCH_BURST_LIMIT` turned up at once (DESIGN.md §7); `refreshDueUsers`/`startWatchedStateScheduler` run it per-user on
   `Settings.watchedRefreshIntervalMin`, independent of any list's sync (wired into `src/index.ts`
   alongside `startScheduler`). The diary and aggregate fetches run one after another, not
   concurrently — confirmed live that firing both at once against the same account's own profile
   pages (`/diary/` and `/films/`) got both 403'd within ~350ms of each other, while either run in
   isolation succeeds reliably; Jellyfin is a different host, so it still runs concurrently with
-  them. `getDiaryWatchedDates(userId)` reads the cache back as a `tmdbId -> watchedAt` map
-  (`letterboxd_diary` rows only) — what `removeOnWatch` reads (DESIGN.md §7). Any source
+  them. `getWatchedDates(userId)` reads the cache back as a `tmdbId -> watchedAt` map (every dated
+  row, any source) — what `removeOnWatch` reads (DESIGN.md §7). Any source
   missing/failing degrades to empty, never throws.
 - **`src/collections/index.ts`** — `syncCollection(list, collectionName)`: resolves each of the
   list's current films to a Jellyfin item id (cached on `Movie.jellyfinItemId` after the first
@@ -136,7 +143,7 @@ Module layout:
   about-to-be-attempted film, *before* calling Radarr, so a failed attempt is visible instead of
   silently retried forever → `upsertMovies` → Phase C: transition each to `added`/`pre_existing` or
   log a `radarr_add_failed` event, per Radarr's outcome → record a `SyncRun` → `reconcileList` for
-  anything that dropped off → `reconcileWatched` if `removeOnWatch` (fed `getDiaryWatchedDates`, not
+  anything that dropped off → `reconcileWatched` if `removeOnWatch` (fed `getWatchedDates`, not
   the deprecated live scrape) → `applyPermanenceClaims` if `permanence` (must run after both
   reconciles — DESIGN.md §5) → `syncCollection` if `makeCollection`; dry-run writes no rows and
   skips all of the above; failures are recorded, never thrown), plus `syncListById`, `syncAll`,
@@ -215,7 +222,13 @@ Module layout:
   (`getSoleOwnerUserId`, `src/reconcile/index.ts`) is that user; an admin sees/resolves everything,
   unfiltered. `lists.ts` rejects `permanence` combined with `unwatchedOnly`/`removeOnWatch` on both
   create and update (effective values = patch merged over the existing row / schema defaults), and
-  calls `handleListDisabled` after a `PATCH` flips `enabled` true→false. Routers are thin — validate
+  calls `handleListDisabled` after a `PATCH` flips `enabled` true→false. For a non-admin session it
+  also applies the owner's list policy (`assertWithinPolicy`, DESIGN.md §9a): no new list on
+  `listAccess: 'none'`, no profile outside `qualityProfiles`, no `takeAmount` over `maxListSize`, no
+  change to `rootFolderId`/`extraTags`/`checkIntervalMin`; a new list (or a changed URL) from a user on
+  `approval` starts `approval: 'pending'`. `POST /:id/approve` and `/:id/reject` are admin-only.
+  `/api/me` and `PATCH /api/users/:id` clear `lastWatchedRefreshAt` when the Letterboxd username
+  changes, so the new account's history is a baseline. Routers are thin — validate
   with zod, then call prisma or the existing scheduler/reconcile/auth functions. Everything under
   `/api` needs a session except `/api/health` and `POST /api/auth/login`; settings/users/global-sync
   are admin-only (deletions is ownership-scoped instead, per above). Prisma P2002/P2025 → 409/404.
@@ -229,7 +242,10 @@ Module layout:
   are mutually-exclusive checkboxes — picking one disables+clears the others), `src/pages/*` (Login,
   Lists, Movies, MovieHistory, Users, Deletions, SyncHistory, Settings). Users has a per-row "Check
   watched" button (`POST /users/:id/refresh-watched`) disabled when the user has neither a Letterboxd
-  username nor a Jellyfin id linked (nothing to check yet). Movies and MovieHistory both
+  username nor a Jellyfin id linked (nothing to check yet), a compact list-policy column, and the
+  policy controls in Edit; Settings has the new-user defaults; Lists shows approval status with
+  admin Approve/Reject, and `listFields.tsx` takes a `limits` prop (`listLimitsFor(me)`) that hides
+  the admin-only fields and narrows the profile dropdown for a non-admin. Movies and MovieHistory both
   show a film's current claiming lists and, when `state === 'kept'` with zero claims, an admin-only
   "Drop keep status" button (`POST /movies/:id/drop-keep`); when `state === 'pre_existing'`, an
   admin-only "Convert to Filmstrip control" button (`POST /movies/:id/convert`) reports back whether
@@ -255,7 +271,7 @@ Module layout:
 - `src/scraper/http.ts`'s `fetchWithRetry` falls back to curl on a 403 (Node's fetch is fingerprinted
   and blocked deterministically on some Letterboxd URLs, curl isn't — see the file's doc comment).
   This was the actual root cause of `removeOnWatch` silently never firing in production: the diary
-  scrape (the only source `getDiaryWatchedDates`/`WatchedFilm.source: 'letterboxd_diary'` reads) was
+  scrape (then the only source `removeOnWatch` read — Jellyfin plays are dated now too) was
   403ing on effectively every daily refresh, so the cache stayed empty. Confirmed live (comparing a
   manual, isolated `curl` call against the app's own request pattern from inside the same container)
   that curl itself can also come back 403 on Letterboxd's diary pages specifically — but a lone curl

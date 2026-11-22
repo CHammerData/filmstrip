@@ -1,11 +1,13 @@
 import { Router, Request } from 'express';
 import { z } from 'zod';
-import { Prisma } from '@prisma/client';
+import { List, Prisma, User } from '@prisma/client';
 import prisma from '../../db/client';
 import { detectListType } from '../../scraper';
 import { syncListById } from '../../scheduler';
 import { deleteList, handleListDisabled } from '../../reconcile';
 import { asyncHandler, parseBody, parseId, notFound, conflict, badRequest, HttpError } from '../http';
+import { requireAdmin } from '../auth';
+import { allowedQualityProfiles, initialApproval, isQualityProfileAllowed } from '../../db/policy';
 import logger from '../../util/logger';
 
 // Ownership scoping: admins manage any list; everyone else only the lists they own. Reads
@@ -15,6 +17,51 @@ function assertCanManage(req: Request, ownerId: number): void {
   if (!session) throw new HttpError(401, 'Authentication required.');
   if (!session.isAdmin && session.userId !== ownerId) {
     throw new HttpError(403, 'You can only manage lists you own.');
+  }
+}
+
+// Fields only an admin may set: they reach into Radarr's layout (root folder, tags) or set how hard
+// Filmstrip hits Letterboxd (check interval). A non-admin may still send them unchanged.
+const ADMIN_ONLY_FIELDS = ['rootFolderId', 'extraTags', 'checkIntervalMin'] as const;
+
+/**
+ * The owner's list policy (DESIGN.md §9a), checked for non-admin sessions on create and update.
+ * `existing` is the row being updated (undefined on create), so an unchanged admin-only value
+ * passes and only a change is refused.
+ */
+async function assertWithinPolicy(
+  req: Request,
+  owner: User,
+  values: { qualityProfile?: string | null; takeAmount?: number | null } & Partial<
+    Record<(typeof ADMIN_ONLY_FIELDS)[number], unknown>
+  >,
+  existing?: List
+): Promise<void> {
+  if (req.session?.isAdmin) return;
+
+  for (const field of ADMIN_ONLY_FIELDS) {
+    const value = values[field];
+    if (value === undefined) continue;
+    const current = existing ? existing[field] : null;
+    if (value !== current) throw new HttpError(403, `Only an admin can change ${field}.`);
+  }
+
+  if (values.qualityProfile !== undefined) {
+    const settings = await prisma.settings.findUnique({ where: { id: 1 } });
+    if (!isQualityProfileAllowed(owner, values.qualityProfile, settings)) {
+      const allowed = allowedQualityProfiles(owner);
+      throw new HttpError(
+        403,
+        allowed === '*' || allowed.length === 0
+          ? 'You can only use the default quality profile.'
+          : `You can use the default quality profile or: ${allowed.join(', ')}.`
+      );
+    }
+  }
+
+  const cap = owner.maxListSize;
+  if (cap !== null && values.takeAmount !== undefined && values.takeAmount !== null && values.takeAmount > cap) {
+    throw new HttpError(403, `Your lists can take at most ${cap} films.`);
   }
 }
 
@@ -99,6 +146,11 @@ export function listsRouter(): Router {
 
       const user = await prisma.user.findUnique({ where: { id: userId } });
       if (!user) throw badRequest(`User id=${userId} does not exist.`);
+      const isAdmin = req.session!.isAdmin;
+      if (!isAdmin && user.listAccess === 'none') {
+        throw new HttpError(403, "You don't have permission to add lists. Ask the server admin.");
+      }
+      await assertWithinPolicy(req, user, overrides);
 
       try {
         const list = await prisma.list.create({
@@ -107,6 +159,7 @@ export function listsRouter(): Router {
             url,
             listType,
             label: label ?? `${user.name}'s ${listType}`,
+            approval: initialApproval(user, isAdmin),
             ...overrides,
           },
         });
@@ -127,6 +180,7 @@ export function listsRouter(): Router {
       assertCanManage(req, existing.userId);
 
       const { url, ...rest } = parseBody(updateSchema, req.body);
+      await assertWithinPolicy(req, existing.user, rest, existing);
       assertPermanenceCompatible({
         permanence: rest.permanence ?? existing.permanence,
         unwatchedOnly: rest.unwatchedOnly ?? existing.unwatchedOnly,
@@ -140,6 +194,8 @@ export function listsRouter(): Router {
         if (!listType) throw badRequest(`"${url}" is not a supported Letterboxd list URL.`);
         data.url = url;
         data.listType = listType;
+        // A different list is a new thing to approve; an admin's own edit approves it.
+        if (url !== existing.url) data.approval = initialApproval(existing.user, req.session!.isAdmin);
       }
 
       let list;
@@ -186,6 +242,27 @@ export function listsRouter(): Router {
       }
     })
   );
+
+  // Approve or reject a pending list (DESIGN.md §9a). Approval only changes the flag: the scheduler
+  // picks the list up on its next tick, since a never-synced list is always due.
+  for (const [action, approval] of [
+    ['approve', 'approved'],
+    ['reject', 'rejected'],
+  ] as const) {
+    router.post(
+      `/:id/${action}`,
+      requireAdmin,
+      asyncHandler(async (req, res) => {
+        const id = parseId(req.params.id);
+        try {
+          res.json(await prisma.list.update({ where: { id }, data: { approval } }));
+        } catch (e) {
+          if (isNotFound(e)) throw notFound(`List id=${id} not found.`);
+          throw e;
+        }
+      })
+    );
+  }
 
   // Manual "sync now" for one list. Runs synchronously and returns the SyncResult.
   router.post(

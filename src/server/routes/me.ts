@@ -28,9 +28,15 @@ export function meRouter(): Router {
     '/',
     asyncHandler(async (req, res) => {
       const { letterboxdUsername } = parseBody(updateSchema, req.body);
+      const current = req.session!.user;
       const user = await prisma.user.update({
         where: { id: req.session!.userId },
-        data: { letterboxdUsername },
+        data: {
+          letterboxdUsername,
+          // A new account's history is a baseline, not a run of new watches (see refreshWatchedState);
+          // clearing this also makes the user due for a refresh right away.
+          ...(letterboxdUsername !== current.letterboxdUsername ? { lastWatchedRefreshAt: null } : {}),
+        },
       });
       res.json(user);
     })

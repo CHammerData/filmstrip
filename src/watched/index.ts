@@ -2,7 +2,12 @@ import { Settings, User } from '@prisma/client';
 import prisma from '../db/client';
 import { fetchMoviesFromUrl, LetterboxdMovie } from '../scraper';
 import { DiaryScraper, DiaryEntry } from '../scraper/diary';
-import { createJellyfinClient, getWatchedTmdbIds as getJellyfinWatchedTmdbIds } from '../api/jellyfin';
+import {
+  createJellyfinClient,
+  getWatchedMovies as getJellyfinWatchedMovies,
+  getWatchedTmdbIds as getJellyfinWatchedTmdbIds,
+  JellyfinWatchedMovie,
+} from '../api/jellyfin';
 import { createFilmCache } from '../films/cache';
 import logger from '../util/logger';
 
@@ -10,7 +15,13 @@ import logger from '../util/logger';
  *  thrown) if the username isn't set or the scrape fails -- watched-state is supplementary,
  *  never something that should block a list's Radarr sync. */
 async function getLetterboxdWatchedTmdbIds(user: User, settings: Settings): Promise<Set<number>> {
-  if (!user.letterboxdUsername) return new Set();
+  return (await scrapeLetterboxdWatchedTmdbIds(user, settings)) ?? new Set();
+}
+
+/** As above, but null when the scrape fails (or no username is set), so the refresh can tell a
+ *  failed scrape from an empty history. */
+async function scrapeLetterboxdWatchedTmdbIds(user: User, settings: Settings): Promise<Set<number> | null> {
+  if (!user.letterboxdUsername) return null;
   try {
     const movies = await fetchMoviesFromUrl(
       `https://letterboxd.com/${user.letterboxdUsername}/films/`,
@@ -25,7 +36,7 @@ async function getLetterboxdWatchedTmdbIds(user: User, settings: Settings): Prom
     );
   } catch (e: any) {
     logger.error(`Error scraping Letterboxd watched films for "${user.letterboxdUsername}": ${e?.message ?? e}`);
-    return new Set();
+    return null;
   }
 }
 
@@ -50,6 +61,13 @@ async function getJellyfinWatchedTmdbIdsForUser(user: User, settings: Settings):
   return getJellyfinWatchedTmdbIds(client, user.jellyfinUserId);
 }
 
+/** This user's Jellyfin plays with last-played dates; null if unconfigured or the call failed. */
+async function getJellyfinWatchedMoviesForUser(user: User, settings: Settings): Promise<JellyfinWatchedMovie[] | null> {
+  if (!user.jellyfinUserId || !settings.jellyfinUrl || !settings.jellyfinApiKey) return null;
+  const client = createJellyfinClient({ url: settings.jellyfinUrl, apiKey: settings.jellyfinApiKey });
+  return getJellyfinWatchedMovies(client, user.jellyfinUserId);
+}
+
 /**
  * A user's full watched set (DESIGN.md §7): Letterboxd diary/watched ∪ Jellyfin playback, as TMDB
  * ids. Either source is silently empty if unconfigured.
@@ -67,27 +85,42 @@ export async function getOwnerWatchedTmdbIds(user: User, settings: Settings): Pr
 }
 
 /**
- * This user's diary-logged watch dates (DESIGN.md §7) -- only letterboxd_diary rows carry a real
- * date; aggregate/jellyfin rows are presence-only and never trigger removeOnWatch (a
- * watched-but-undiaried film can't be told "just watched" from "watched years ago"). Reads the
- * WatchedFilm cache (refreshed independently on Settings.watchedRefreshIntervalMin), not a live
- * scrape.
+ * This user's dated watches (DESIGN.md §7) -- what removeOnWatch compares against a list's
+ * firstSeenAt. A row carries a date when it came from the Letterboxd diary, a Jellyfin play, or a
+ * Letterboxd watch that a refresh noticed for the first time (see `refreshWatchedState`); undated
+ * rows are presence-only and never trigger removeOnWatch. Reads the WatchedFilm cache (refreshed
+ * independently on Settings.watchedRefreshIntervalMin), not a live scrape.
  */
-export async function getDiaryWatchedDates(userId: number): Promise<Map<number, Date>> {
+export async function getWatchedDates(userId: number): Promise<Map<number, Date>> {
   const rows = await prisma.watchedFilm.findMany({
-    where: { userId, source: 'letterboxd_diary', watchedAt: { not: null } },
+    where: { userId, watchedAt: { not: null } },
     select: { tmdbId: true, watchedAt: true },
   });
   return new Map(rows.map((r) => [r.tmdbId, r.watchedAt!]));
 }
 
 /**
- * Refresh one user's cached watched-state (DESIGN.md §7): diary (dated) + aggregate watched-films
- * (presence only) + Jellyfin playback (presence only), upserted into WatchedFilm. A diary date
- * always wins over a presence-only record for the same film -- it's the only reliable "when," and
- * the only thing removeOnWatch is ever allowed to compare against (a watched-but-undiaried film
- * can raise unwatchedOnly's presence check, but never removeOnWatch's date check). A film logged
- * more than once in the diary (a rewatch) keeps its most recent date.
+ * More undated watches than this turning up in one refresh reads as a scrape catching up (the
+ * first successful /films/ scrape after failures, or a page that was missing last time), not as
+ * films the user just watched, so none of them is dated.
+ */
+export const NEW_WATCH_BURST_LIMIT = 20;
+
+/**
+ * Refresh one user's cached watched-state (DESIGN.md §7) from three sources, upserted into
+ * WatchedFilm, and date every watch it can -- removeOnWatch only ever acts on a dated watch:
+ *
+ * - **Letterboxd diary**: the date logged.
+ * - **Jellyfin**: the item's last-played date. Watching a film on the server is as good a "just
+ *   watched" signal as logging it.
+ * - **Letterboxd /films/ (marked watched, no diary entry)**: no date of its own, so a film is dated
+ *   *when a refresh first sees it* -- if this user has been refreshed before (otherwise it's their
+ *   history, not a new watch) and the refresh didn't turn up more than NEW_WATCH_BURST_LIMIT such
+ *   films at once. A film already in the cache keeps whatever it had.
+ *
+ * The most recent date wins across sources, and a date already cached is never lost to a later
+ * refresh that couldn't reach a source. A film logged more than once in the diary (a rewatch) keeps
+ * its most recent date.
  *
  * The two Letterboxd-hitting fetches (diary, aggregate) are run one after another, not
  * concurrently. Confirmed live: firing both at once at this account's own profile pages
@@ -99,26 +132,57 @@ export async function getDiaryWatchedDates(userId: number): Promise<Map<number, 
  * to collide with.
  */
 export async function refreshWatchedState(user: User, settings: Settings): Promise<void> {
-  const jellyfinPromise = getJellyfinWatchedTmdbIdsForUser(user, settings);
+  const jellyfinPromise = getJellyfinWatchedMoviesForUser(user, settings);
   const diaryEntries = await getLetterboxdDiaryEntries(user, settings);
-  const aggregateIds = await getLetterboxdWatchedTmdbIds(user, settings);
-  const jellyfinIds = await jellyfinPromise;
+  const aggregateIds = (await scrapeLetterboxdWatchedTmdbIds(user, settings)) ?? new Set<number>();
+  const jellyfinMovies = (await jellyfinPromise) ?? [];
 
+  const cached = new Map(
+    (
+      await prisma.watchedFilm.findMany({
+        where: { userId: user.id },
+        select: { tmdbId: true, watchedAt: true, source: true },
+      })
+    ).map((r) => [r.tmdbId, r])
+  );
+
+  // Every dated watch per film, latest wins; presence-only sources just mark the film watched.
   const byTmdbId = new Map<number, { watchedAt: Date | null; source: string }>();
-  for (const tmdbId of aggregateIds) byTmdbId.set(tmdbId, { watchedAt: null, source: 'letterboxd_aggregate' });
-  for (const tmdbId of jellyfinIds) byTmdbId.set(tmdbId, { watchedAt: null, source: 'jellyfin' });
+  const offer = (tmdbId: number, watchedAt: Date | null, source: string) => {
+    const current = byTmdbId.get(tmdbId);
+    if (!current || (watchedAt && (!current.watchedAt || watchedAt > current.watchedAt))) {
+      byTmdbId.set(tmdbId, { watchedAt, source });
+    }
+  };
+  for (const tmdbId of aggregateIds) offer(tmdbId, null, 'letterboxd_aggregate');
+  for (const m of jellyfinMovies) offer(m.tmdbId, m.lastPlayedAt, 'jellyfin');
   for (const entry of diaryEntries) {
     const tmdbId = parseInt(entry.tmdbId, 10);
-    if (isNaN(tmdbId)) continue;
-    const existing = byTmdbId.get(tmdbId);
-    if (!existing || !existing.watchedAt || entry.watchedAt > existing.watchedAt) {
-      byTmdbId.set(tmdbId, { watchedAt: entry.watchedAt, source: 'letterboxd_diary' });
-    }
+    if (!isNaN(tmdbId)) offer(tmdbId, entry.watchedAt, 'letterboxd_diary');
+  }
+
+  // Undated and never seen before: a new watch, unless this is the user's first refresh or a burst.
+  const newUndated = [...byTmdbId].filter(([tmdbId, w]) => !w.watchedAt && !cached.has(tmdbId));
+  const dateNewWatches = user.lastWatchedRefreshAt !== null && newUndated.length <= NEW_WATCH_BURST_LIMIT;
+  if (user.lastWatchedRefreshAt !== null && !dateNewWatches) {
+    logger.warn(
+      `Watched-state refresh for user "${user.name}" found ${newUndated.length} newly watched film(s) ` +
+        `with no date (more than ${NEW_WATCH_BURST_LIMIT}); treating them as history, not new watches.`
+    );
+  }
+  const now = new Date();
+  for (const [tmdbId, w] of newUndated) {
+    if (dateNewWatches) byTmdbId.set(tmdbId, { ...w, watchedAt: now });
   }
 
   // Sequential: SQLite is single-writer (see scheduler's upsert loop for the same reasoning) --
   // a large watched history fanned out with Promise.all would contend for the write lock.
-  for (const [tmdbId, { watchedAt, source }] of byTmdbId) {
+  for (const [tmdbId, fresh] of byTmdbId) {
+    const old = cached.get(tmdbId);
+    // Keep a cached date this refresh can't beat (a source was unreachable, or it's undated now).
+    const { watchedAt, source } =
+      old?.watchedAt && (!fresh.watchedAt || old.watchedAt >= fresh.watchedAt) ? old : fresh;
+    if (old && old.source === source && old.watchedAt?.getTime() === watchedAt?.getTime()) continue;
     await prisma.watchedFilm.upsert({
       where: { userId_tmdbId: { userId: user.id, tmdbId } },
       update: { watchedAt, source },
@@ -126,7 +190,7 @@ export async function refreshWatchedState(user: User, settings: Settings): Promi
     });
   }
 
-  await prisma.user.update({ where: { id: user.id }, data: { lastWatchedRefreshAt: new Date() } });
+  await prisma.user.update({ where: { id: user.id }, data: { lastWatchedRefreshAt: now } });
   logger.info(`Refreshed watched state for user "${user.name}": ${byTmdbId.size} film(s) known watched.`);
 }
 

@@ -61,7 +61,7 @@ const ADMIN = 'filmstrip_session=admin';
 const USER = 'filmstrip_session=user';
 
 const adminUser = { id: 1, name: 'Admin', tag: 'admin', jellyfinUserId: 'jf-admin' };
-const regularUser = { id: 2, name: 'Sam', tag: 'sam', jellyfinUserId: 'jf-sam' };
+const regularUser = { id: 2, name: 'Sam', tag: 'sam', jellyfinUserId: 'jf-sam', letterboxdUsername: null };
 
 function knownError(code: string): Prisma.PrismaClientKnownRequestError {
   return new Prisma.PrismaClientKnownRequestError('mock', { code, clientVersion: 'test' });
@@ -539,8 +539,18 @@ describe('me (self-service)', () => {
     const res = await request(app).patch('/api/me').set('Cookie', USER).send({ letterboxdUsername: 'sam' });
     expect(res.status).toBe(200);
     // Always targets the session user, never a body-supplied id.
+    // A new username re-baselines the watched-state refresh (and makes it due now).
     expect(mockPrisma.user.update).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: 2 }, data: { letterboxdUsername: 'sam' } })
+      expect.objectContaining({ where: { id: 2 }, data: { letterboxdUsername: 'sam', lastWatchedRefreshAt: null } })
+    );
+  });
+
+  it('PATCH /api/me leaves the refresh time alone when the username is unchanged', async () => {
+    mockPrisma.user.update.mockImplementation(({ data }: any) => Promise.resolve({ id: 2, ...data }));
+    const res = await request(app).patch('/api/me').set('Cookie', USER).send({ letterboxdUsername: null });
+    expect(res.status).toBe(200);
+    expect(mockPrisma.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { letterboxdUsername: null } })
     );
   });
 
@@ -809,5 +819,122 @@ describe('sync (admin)', () => {
     expect(res.status).toBe(200);
     expect(syncDue).toHaveBeenCalled();
     expect(syncAll).not.toHaveBeenCalled();
+  });
+});
+
+describe('list policy (non-admin)', () => {
+  const owner = (policy: Record<string, unknown>) => ({ ...regularUser, listAccess: 'auto', qualityProfiles: null, maxListSize: null, ...policy });
+  const watchlist = 'https://letterboxd.com/sam/watchlist/';
+
+  beforeEach(() => {
+    mockPrisma.settings.findUnique.mockResolvedValue({ id: 1, defaultQualityProfile: 'HD Bluray + WEB' });
+    mockPrisma.list.create.mockImplementation(({ data }: any) => Promise.resolve({ id: 9, ...data }));
+    mockPrisma.list.update.mockImplementation(({ data }: any) => Promise.resolve({ id: 9, ...data }));
+  });
+
+  it('refuses a new list from a user with no list access', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue(owner({ listAccess: 'none' }));
+    const res = await request(app).post('/api/lists').set('Cookie', USER).send({ userId: 2, url: watchlist });
+    expect(res.status).toBe(403);
+    expect(mockPrisma.list.create).not.toHaveBeenCalled();
+  });
+
+  it('creates a list pending approval for a user on "approval"', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue(owner({ listAccess: 'approval' }));
+    const res = await request(app).post('/api/lists').set('Cookie', USER).send({ userId: 2, url: watchlist });
+    expect(res.status).toBe(201);
+    expect(res.body.approval).toBe('pending');
+  });
+
+  it('creates an approved list for a user on "auto"', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue(owner({ listAccess: 'auto' }));
+    const res = await request(app).post('/api/lists').set('Cookie', USER).send({ userId: 2, url: watchlist });
+    expect(res.body.approval).toBe('approved');
+  });
+
+  it('approves a list an admin creates for a user on "approval"', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue(owner({ listAccess: 'approval' }));
+    const res = await request(app).post('/api/lists').set('Cookie', ADMIN).send({ userId: 2, url: watchlist });
+    expect(res.body.approval).toBe('approved');
+  });
+
+  it('refuses a quality profile the user may not use, and allows the default', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue(owner({ qualityProfiles: 'UHD Bluray + WEB' }));
+    const bad = await request(app)
+      .post('/api/lists')
+      .set('Cookie', USER)
+      .send({ userId: 2, url: watchlist, qualityProfile: 'Any' });
+    expect(bad.status).toBe(403);
+    expect(bad.body.error).toMatch(/UHD Bluray \+ WEB/);
+
+    for (const qualityProfile of ['HD Bluray + WEB', 'UHD Bluray + WEB', null]) {
+      const ok = await request(app)
+        .post('/api/lists')
+        .set('Cookie', USER)
+        .send({ userId: 2, url: watchlist, qualityProfile });
+      expect(ok.status).toBe(201);
+    }
+  });
+
+  it('refuses a take amount over the user\'s cap', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue(owner({ maxListSize: 25 }));
+    const res = await request(app)
+      .post('/api/lists')
+      .set('Cookie', USER)
+      .send({ userId: 2, url: watchlist, takeAmount: 100 });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/at most 25/);
+  });
+
+  it('refuses admin-only fields from a non-admin', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue(owner({}));
+    const res = await request(app)
+      .post('/api/lists')
+      .set('Cookie', USER)
+      .send({ userId: 2, url: watchlist, checkIntervalMin: 1 });
+    expect(res.status).toBe(403);
+  });
+
+  it('sends a list back for approval when a user on "approval" changes its URL', async () => {
+    mockPrisma.list.findUnique.mockResolvedValue({
+      id: 9,
+      userId: 2,
+      url: watchlist,
+      approval: 'approved',
+      rootFolderId: null,
+      extraTags: null,
+      checkIntervalMin: null,
+      user: owner({ listAccess: 'approval' }),
+    });
+    const res = await request(app)
+      .patch('/api/lists/9')
+      .set('Cookie', USER)
+      .send({ url: 'https://letterboxd.com/films/popular/' });
+    expect(res.status).toBe(200);
+    expect(res.body.approval).toBe('pending');
+  });
+
+  it('lets an unchanged admin-only value through on PATCH', async () => {
+    mockPrisma.list.findUnique.mockResolvedValue({
+      id: 9,
+      userId: 2,
+      url: watchlist,
+      approval: 'approved',
+      rootFolderId: null,
+      extraTags: 'x',
+      checkIntervalMin: null,
+      user: owner({}),
+    });
+    const res = await request(app).patch('/api/lists/9').set('Cookie', USER).send({ extraTags: 'x', label: 'Mine' });
+    expect(res.status).toBe(200);
+  });
+
+  it('approve/reject are admin-only', async () => {
+    expect((await request(app).post('/api/lists/9/approve').set('Cookie', USER)).status).toBe(403);
+    const res = await request(app).post('/api/lists/9/approve').set('Cookie', ADMIN);
+    expect(res.status).toBe(200);
+    expect(mockPrisma.list.update).toHaveBeenCalledWith({ where: { id: 9 }, data: { approval: 'approved' } });
+    const rejected = await request(app).post('/api/lists/9/reject').set('Cookie', ADMIN);
+    expect(rejected.body.approval).toBe('rejected');
   });
 });

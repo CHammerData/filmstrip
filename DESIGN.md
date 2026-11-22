@@ -47,9 +47,11 @@ User
   name, tag (Radarr attribution), enabled                           [M1 ✅]
   letterboxdUsername    -- fetch watched + diary                    [M4 ✅, partial: /films/ scrape, not yet the diary RSS]
   jellyfinUserId        -- Jellyfin watched state; auth link is [planned] (M6) [M4 ✅, partial]
+  listAccess, qualityProfiles, maxListSize -- per-user list policy (§9a)    [built]
 
 List
   userId, url, listType, label, enabled                             [M1 ✅]
+  approval          pending | approved | rejected; only approved syncs (§9a) [built]
   radarr overrides (quality/root/minAvail/monitored/extraTags)      [M1 ✅]
   takeAmount/takeStrategy, checkIntervalMin                         [M1 ✅]
   -- behavior toggles -- deleting the file on approval is now standard behavior, no longer a
@@ -57,7 +59,7 @@ List
   -- (enforced in src/server/routes/lists.ts + the GUI) -- a list that's meant to keep everything
   -- it claims forever can't also be conditioned on watch-state.
   unwatchedOnly     bool=false   skip films the owner has watched   [M4 ✅]
-  removeOnWatch     bool=false   queue for deletion review on a real diary watch date postdating
+  removeOnWatch     bool=false   queue for deletion review on a dated watch (diary, Jellyfin, newly seen) postdating
                                  this list's own claim, unless another ordinary claim remains (§7) [M4 ✅]
   makeCollection    bool=false   maintain a Jellyfin collection of this list [M4 ✅, unverified live]
   collectionNameOverride  string?                                   [M4 ✅]
@@ -159,7 +161,7 @@ override, never something the keeper-rule does on its own.
 regardless of state — including `pre_existing` ones, which otherwise have no history at all. A
 list's claim can end four ways, each its own event type: `left_list` (scraped off the list),
 `list_deleted` (the list itself was deleted), `list_deactivated` (the list was disabled), and
-`watch_dropped` (a `removeOnWatch` list drops it once the owner's diary shows it watched) — logged
+`watch_dropped` (a `removeOnWatch` list drops it once the owner has watched it, §7) — logged
 *regardless* of whether that particular claim-drop happens to be the one that zeroes the film out
 (DESIGN.md §5). This is what makes the worked example in the film's history read as a real audit
 trail: *List A claims F → List B claims F → List A deleted (claim dropped, list_deleted) → List C
@@ -272,7 +274,7 @@ image of `dropKeepStatus` on the *other* side of the provenance keystone (§2): 
 management, transitioning it to `added`. Rather than leaving the film to catch up at the next sync,
 it immediately runs the same reconciliation a sync would have: zero current claims queues it for
 review right away (reason `left_list`); an enabled `removeOnWatch` list already claiming it gets its
-`reconcileWatched` check run for real, so a diary watch that already postdates that list's claim
+`reconcileWatched` check run for real, so a dated watch that already postdates that list's claim
 queues it (reason `watched`) on the spot instead of sitting managed-but-stale for up to a full sync
 interval. A claim from an `unwatchedOnly` list needs no special handling — its `ListMovie` row
 already exists (`unwatchedOnly` only ever filters *new* adds at scrape time, never an
@@ -281,25 +283,43 @@ other list. Throws if the film isn't currently `pre_existing`.
 
 *Future option:* per-list **grace period** to auto-approve after N days of inaction. Default manual.
 
-## 7. Watched state (Letterboxd ∪ Jellyfin) **[M4 ✅]**
+## 7. Watched state (Letterboxd ∪ Jellyfin) **[M4 ✅; dated Jellyfin + new-watch dating built]**
 
 A film is "watched" by a user if it's in their **Letterboxd** watched (scraped from their
 `/films/` page, or diary-logged — `src/scraper/diary.ts`) **or** played in **Jellyfin** (via
 `jellyfinUserId`). Both feed the `WatchedFilm` cache (`userId, tmdbId, watchedAt?, source`),
 refreshed independently of any list's own sync on `Settings.watchedRefreshIntervalMin`
 (`refreshWatchedState`/`refreshDueUsers` in `src/watched/index.ts`) — decoupled so it runs once per
-user regardless of how many lists they own. Only `letterboxd_diary` rows ever carry a real
-`watchedAt`; `letterboxd_aggregate` (the `/films/` page) and `jellyfin` rows are presence-only,
-since neither can distinguish "just watched" from "watched years ago."
+user regardless of how many lists they own.
+
+**Every watch the refresh can date, it dates** — `removeOnWatch` acts only on a dated watch, and
+the point of it is that watching a film is enough: nobody should have to come back and take it off
+a list or approve a cleanup step they forgot about.
+- **Letterboxd diary** → the date logged.
+- **Jellyfin** → the item's `UserData.LastPlayedDate` for that user (`getWatchedMovies`). Finishing
+  a film on the server is as good a "just watched" signal as logging it.
+- **Letterboxd `/films/` (marked watched, no diary entry)** → no date of its own, so it's dated
+  *when a refresh first sees it*: a film with no `WatchedFilm` row yet gets `watchedAt = now`. Two
+  guards keep a backlog from reading as a run of new watches: nothing is dated on a user's **first**
+  refresh (`lastWatchedRefreshAt` null — that's their history; changing a user's Letterboxd username
+  clears it, so a newly linked account is baselined too), and a refresh that turns up more than
+  `NEW_WATCH_BURST_LIMIT` (20) undated new watches at once dates none of them (a scrape catching up
+  after failures or a missing page, not twenty films watched since yesterday).
+
+Across sources the most recent date wins, and a date already cached is never lost to a later
+refresh that couldn't reach a source. Rows that stay undated are presence-only (old history), used
+by `unwatchedOnly` but never by `removeOnWatch`. Letterboxd also takes a film off your **watchlist**
+when you mark it watched, so on a watchlist that path usually arrives first, as `left_list`.
+
 - `unwatchedOnly` — subtract the owner's watched set at scrape time (filters what's attempted; does
   not by itself mark anything for deletion). Still reads the live per-call
   `getOwnerWatchedTmdbIds` union (presence-only, no dates needed).
-- `removeOnWatch` — reads the diary-date cache instead (`getDiaryWatchedDates`), since it needs a
-  real date. For each film a `removeOnWatch` list currently claims, it queues the film (and logs a
+- `removeOnWatch` — reads the dated cache instead (`getWatchedDates`), since it needs a real
+  date. For each film a `removeOnWatch` list currently claims, it queues the film (and logs a
   `watch_dropped` claim-drop event, §4) only if: the film is still `Movie.state === 'added'` (once
-  it's left `added` for any reason there's nothing left for this list to drop), the diary date is
-  real *and* postdates this list's own `ListMovie.firstSeenAt` for the film (so a stale pre-list
-  watch, or a presence-only aggregate/Jellyfin watch, never triggers it), *and* no other enabled,
+  it's left `added` for any reason there's nothing left for this list to drop), the watch date
+  postdates this list's own `ListMovie.firstSeenAt` for the film (so a stale pre-list watch, or an
+  undated one, never triggers it), *and* no other enabled,
   non-`removeOnWatch` list still ordinarily claims the film (that list's plain claim takes
   precedence — the film isn't queued until every interested party agrees it should go on watch). A
   film that's still `added` and still meets the drop condition is *retried* every sync — a prior
@@ -343,13 +363,39 @@ and we need `jellyfinUserId` anyway.
   Admins get settings, user management, and global sync; any authenticated user can manage lists and
   read sync history. The deletion queue is ownership-scoped rather than admin-only: a non-admin sees
   and can approve/keep only requests for films that only their own lists ever added
-  (`getSoleOwnerUserId`, §5); an admin sees/resolves everything. Scoping *lists themselves* to only
+  (`getSoleOwnerUserId`, §5); an admin sees/resolves everything. What a user may do with their own
+  lists is a per-user policy (§9a). Scoping *lists themselves* to only
   their own owner (a non-admin currently sees every list) is a tracked refinement, not yet enforced.
   (§6 has the deletion-queue scoping detail.)
 - Identity (Jellyfin) is separate from the **Letterboxd handle**, which each user sets in profile.
 
 The middleware (`src/server/auth.ts`) gates everything under `/api` except `/api/health` and
 `POST /api/auth/login`.
+
+## 9a. Per-user list policy **[built]**
+
+Anyone with a Jellyfin account can sign in, so what a person may do with lists is set per user —
+the same tiers the server's Seerr uses for requests:
+
+| `User` field | Values | Effect |
+| :--- | :--- | :--- |
+| `listAccess` | `none` · `approval` · `auto` | `none`: can't add lists, and lists they already have stop syncing. `approval`: a new list — or an existing one given a different URL — is `List.approval = 'pending'` and doesn't sync until an admin approves it (Lists page, `POST /api/lists/:id/approve` / `reject`). `auto`: lists sync straight away. |
+| `qualityProfiles` | `null` · `"*"` · `"A,B"` | Profiles they may pick for a list. `null` is the Settings default only; the default is always allowed. |
+| `maxListSize` | `null` · N | Cap on films taken from any one of their lists. A list that would take everything takes N. |
+
+Where it's enforced (`src/db/policy.ts` holds the rules):
+- **Lists API, non-admin sessions only**: refuses a new list on `none`, a profile outside
+  `qualityProfiles`, a `takeAmount` above the cap, and any change to the admin-only fields
+  (`rootFolderId`, `extraTags`, `checkIntervalMin` — Radarr layout and Letterboxd load).
+- **At sync time, for everyone** (`resolveListConfig`, `loadEnabledLists`): only `approved` lists
+  of owners not on `none` sync; the cap is applied to `take`; a profile the owner may no longer use
+  falls back to the Settings default. So tightening someone's policy reaches lists they already have.
+
+Jellyfin admins are never limited: their session skips the API checks, and a newly provisioned
+admin gets `auto` / `"*"` / no cap. Everyone else starts from `Settings.newUserListAccess`
+(default `approval`) and `Settings.newUserMaxListSize` (default 50), copied onto the `User` at first
+login. The column defaults are the restrictive ones too, so a user created by any path that forgets
+the policy can't add lists unreviewed; the migration gave users who already existed `auto` / `"*"`.
 
 ## 10. Open questions / later
 

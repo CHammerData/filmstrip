@@ -17,6 +17,8 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
     defaultCheckIntervalMin: 60,
     dryRun: false,
     watchedRefreshIntervalMin: 1440,
+    newUserListAccess: 'approval',
+    newUserMaxListSize: 50,
     createdAt: now,
     updatedAt: now,
     ...overrides,
@@ -32,6 +34,9 @@ function makeUser(overrides: Partial<User> = {}): User {
     letterboxdUsername: null,
     jellyfinUserId: null,
     lastWatchedRefreshAt: null,
+    listAccess: 'auto',
+    qualityProfiles: '*',
+    maxListSize: null,
     createdAt: now,
     updatedAt: now,
     ...overrides,
@@ -60,6 +65,7 @@ function makeList(overrides: Partial<List> = {}, user: User = makeUser()): ListW
     makeCollection: false,
     collectionNameOverride: null,
     jellyfinCollectionId: null,
+    approval: 'approved',
     lastSyncedAt: null,
     createdAt: now,
     updatedAt: now,
@@ -145,5 +151,18 @@ describe('resolveListConfig', () => {
     expect(config.unwatchedOnly).toBe(true);
     expect(config.removeOnWatch).toBe(true);
     expect(config.makeCollection).toBe(true);
+  });
+
+  it("caps take at the owner's maxListSize, even for a list that takes everything", () => {
+    const capped = makeUser({ maxListSize: 30 });
+    expect(resolveListConfig(makeList({ takeAmount: null }, capped), makeSettings()).take).toBe(30);
+    expect(resolveListConfig(makeList({ takeAmount: 80 }, capped), makeSettings()).take).toBe(30);
+    expect(resolveListConfig(makeList({ takeAmount: 10 }, capped), makeSettings()).take).toBe(10);
+  });
+
+  it('falls back to the Settings default for a profile the owner may no longer use', () => {
+    const restricted = makeUser({ qualityProfiles: null });
+    const config = resolveListConfig(makeList({ qualityProfile: '4K' }, restricted), makeSettings());
+    expect(config.qualityProfile).toBe(makeSettings().defaultQualityProfile);
   });
 });

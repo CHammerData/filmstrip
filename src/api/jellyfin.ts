@@ -132,10 +132,23 @@ interface JellyfinItem {
   Id: string;
   Name: string;
   ProviderIds?: { Tmdb?: string };
+  UserData?: { LastPlayedDate?: string };
 }
 
-/** Every movie the given user has marked played, as TMDB ids. */
-export async function getWatchedTmdbIds(client: AxiosInstance, jellyfinUserId: string): Promise<Set<number>> {
+/** A movie the user has played, with when they last played it (null if Jellyfin has no date --
+ *  e.g. marked played by hand on a server that doesn't stamp one). */
+export interface JellyfinWatchedMovie {
+  tmdbId: number;
+  lastPlayedAt: Date | null;
+}
+
+/** Every movie the given user has marked played, with Jellyfin's last-played date. Returns null
+ *  (not an empty list) when the request fails, so a caller can tell "nothing played" from "couldn't
+ *  ask" -- the watched-state refresh must not read a failed call as a clean slate. */
+export async function getWatchedMovies(
+  client: AxiosInstance,
+  jellyfinUserId: string
+): Promise<JellyfinWatchedMovie[] | null> {
   try {
     const response = await client.get(`/Users/${jellyfinUserId}/Items`, {
       params: {
@@ -143,18 +156,28 @@ export async function getWatchedTmdbIds(client: AxiosInstance, jellyfinUserId: s
         Filters: 'IsPlayed',
         Recursive: true,
         Fields: 'ProviderIds',
+        EnableUserData: true,
       },
     });
     const items: JellyfinItem[] = response.data?.Items ?? [];
-    return new Set(
-      items
-        .map((i) => (i.ProviderIds?.Tmdb ? parseInt(i.ProviderIds.Tmdb) : null))
-        .filter((id): id is number => id !== null)
-    );
+    const movies: JellyfinWatchedMovie[] = [];
+    for (const i of items) {
+      const tmdbId = i.ProviderIds?.Tmdb ? parseInt(i.ProviderIds.Tmdb) : NaN;
+      if (isNaN(tmdbId)) continue;
+      const played = i.UserData?.LastPlayedDate ? new Date(i.UserData.LastPlayedDate) : null;
+      movies.push({ tmdbId, lastPlayedAt: played && !isNaN(played.getTime()) ? played : null });
+    }
+    return movies;
   } catch (error: any) {
     logger.error(`Error getting Jellyfin watched items for user ${jellyfinUserId}: ${error?.message ?? error}`);
-    return new Set();
+    return null;
   }
+}
+
+/** Every movie the given user has marked played, as TMDB ids. Empty on failure. */
+export async function getWatchedTmdbIds(client: AxiosInstance, jellyfinUserId: string): Promise<Set<number>> {
+  const movies = await getWatchedMovies(client, jellyfinUserId);
+  return new Set((movies ?? []).map((m) => m.tmdbId));
 }
 
 /** Every movie in the Jellyfin library, mapped to its TMDB id (null if unmatched). Used to

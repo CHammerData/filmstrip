@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { get, patch, post, ApiError, Settings as SettingsType, SyncResult } from '../api';
+import { get, patch, post, ApiError, Settings as SettingsType, SyncResult, ListAccess } from '../api';
 import { useLoad } from '../useLoad';
 
 export default function Settings() {
@@ -41,6 +41,8 @@ function SettingsForm({ initial, onSaved }: { initial: SettingsType; onSaved: ()
         defaultMinimumAvailability: form.defaultMinimumAvailability,
         defaultCheckIntervalMin: form.defaultCheckIntervalMin,
         dryRun: form.dryRun,
+        newUserListAccess: form.newUserListAccess,
+        newUserMaxListSize: form.newUserMaxListSize,
       });
       setSaved(true);
       onSaved();
@@ -123,6 +125,35 @@ function SettingsForm({ initial, onSaved }: { initial: SettingsType; onSaved: ()
             type="number"
             value={form.defaultCheckIntervalMin}
             onChange={(e) => set('defaultCheckIntervalMin', Number(e.target.value))}
+          />
+        </label>
+      </div>
+
+      <h2>New users</h2>
+      <p className="muted" style={{ fontSize: 12 }}>
+        What someone signing in for the first time can do with Letterboxd lists. Change it per person on
+        the Users page; Jellyfin admins are never limited.
+      </p>
+      <div className="row">
+        <label>
+          <span>Adding lists</span>
+          <select
+            value={form.newUserListAccess}
+            onChange={(e) => set('newUserListAccess', e.target.value as ListAccess)}
+          >
+            <option value="approval">Lists need approval</option>
+            <option value="auto">Lists sync straight away</option>
+            <option value="none">No lists</option>
+          </select>
+        </label>
+        <label>
+          <span>Max films per list</span>
+          <input
+            type="number"
+            min={1}
+            value={form.newUserMaxListSize ?? ''}
+            placeholder="no cap"
+            onChange={(e) => set('newUserMaxListSize', e.target.value ? Number(e.target.value) : null)}
           />
         </label>
       </div>

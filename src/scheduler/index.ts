@@ -1,10 +1,11 @@
 import prisma from '../db/client';
 import { resolveListConfig, ListWithUser } from '../db/config';
+import { isListSyncable } from '../db/policy';
 import { fetchMoviesFromUrl, LetterboxdMovie } from '../scraper';
 import { createRadarrClient, upsertMovies } from '../api/radarr';
 import { createFilmCache } from '../films/cache';
 import { reconcileList, reconcileWatched, applyPermanenceClaims } from '../reconcile';
-import { getOwnerWatchedTmdbIds, getDiaryWatchedDates, refreshWatchedState } from '../watched';
+import { getOwnerWatchedTmdbIds, getWatchedDates, refreshWatchedState } from '../watched';
 import { syncCollection } from '../collections';
 import { transitionMovie, logMovieEvent } from '../movieState';
 import logger from '../util/logger';
@@ -47,7 +48,7 @@ export async function syncList(list: ListWithUser): Promise<SyncResult> {
 
     // Watched-state (DESIGN.md §7) is only fetched if a toggle actually needs it. unwatchedOnly
     // still reads the live-scrape/Jellyfin union (presence only, no dates); removeOnWatch reads
-    // the diary-date cache instead (it needs a real date to tell "just watched" from "watched
+    // the dated WatchedFilm cache instead (it needs a real date to tell "just watched" from "watched
     // years ago" — DESIGN.md §7). A failure here degrades to "nothing watched" rather than
     // failing the sync; it's supplementary to the core Radarr push.
     let watchedTmdbIds = new Set<number>();
@@ -58,12 +59,12 @@ export async function syncList(list: ListWithUser): Promise<SyncResult> {
         logger.error(`Failed to resolve watched state for list id=${list.id}: ${e?.message ?? e}`);
       }
     }
-    let diaryWatchedDates = new Map<number, Date>();
+    let watchedDates = new Map<number, Date>();
     if (config.removeOnWatch) {
       try {
-        diaryWatchedDates = await getDiaryWatchedDates(list.user.id);
+        watchedDates = await getWatchedDates(list.user.id);
       } catch (e: any) {
-        logger.error(`Failed to resolve diary watch dates for list id=${list.id}: ${e?.message ?? e}`);
+        logger.error(`Failed to resolve watch dates for list id=${list.id}: ${e?.message ?? e}`);
       }
     }
 
@@ -181,10 +182,10 @@ export async function syncList(list: ListWithUser): Promise<SyncResult> {
       }
 
       // removeOnWatch: queue review for anything still on this list the owner has now watched
-      // (diary-date-driven — see reconcileWatched).
+      // (watch-date-driven — see reconcileWatched).
       if (config.removeOnWatch) {
         try {
-          await reconcileWatched(list, diaryWatchedDates);
+          await reconcileWatched(list, watchedDates);
         } catch (e: any) {
           logger.error(`Reconcile (watched) failed for list id=${list.id}: ${e?.message ?? e}`);
         }
@@ -266,7 +267,7 @@ export async function syncList(list: ListWithUser): Promise<SyncResult> {
 /** Load an enabled list (with enabled owner) by id, or null. */
 async function loadSyncableList(listId: number): Promise<ListWithUser | null> {
   const list = await prisma.list.findUnique({ where: { id: listId }, include: { user: true } });
-  if (!list || !list.enabled || !list.user.enabled) return null;
+  if (!list || !list.enabled || !list.user.enabled || !isListSyncable(list)) return null;
   return list;
 }
 
@@ -274,15 +275,17 @@ async function loadSyncableList(listId: number): Promise<ListWithUser | null> {
 export async function syncListById(listId: number): Promise<SyncResult> {
   const list = await loadSyncableList(listId);
   if (!list) {
-    throw new Error(`List id=${listId} not found, disabled, or owner disabled.`);
+    throw new Error(
+      `List id=${listId} not found, disabled, owner disabled, not yet approved, or its owner may not sync lists.`
+    );
   }
   return syncList(list);
 }
 
-/** All enabled lists owned by enabled users. */
+/** All enabled, approved lists owned by enabled users who may sync lists (DESIGN.md §9a). */
 async function loadEnabledLists(): Promise<ListWithUser[]> {
   return prisma.list.findMany({
-    where: { enabled: true, user: { enabled: true } },
+    where: { enabled: true, approval: 'approved', user: { enabled: true, listAccess: { not: 'none' } } },
     include: { user: true },
   });
 }
@@ -333,7 +336,7 @@ export interface ForceReconcileWatchedResult {
 /**
  * Force one user's watched-state cache to refresh right now -- bypassing
  * Settings.watchedRefreshIntervalMin's due-check (see `isDue` in src/watched/index.ts) -- then
- * immediately reconcile every enabled removeOnWatch list they own against the now-current diary
+ * immediately reconcile every enabled removeOnWatch list they own against the now-current watch
  * dates. This is the "check watched now" action a human triggers (e.g. the Users page), so they
  * don't have to wait for the next scheduled refresh tick *and* that list's own next sync to
  * notice a watch. A refresh failure throws (the admin needs to see it); one list's reconcile
@@ -351,12 +354,12 @@ export async function forceReconcileWatched(userId: number): Promise<ForceReconc
     where: { userId, enabled: true, removeOnWatch: true },
     include: { user: true },
   });
-  const diaryWatchedDates = await getDiaryWatchedDates(userId);
+  const watchedDates = await getWatchedDates(userId);
 
   const listsReconciled: number[] = [];
   for (const list of lists) {
     try {
-      await reconcileWatched(list, diaryWatchedDates);
+      await reconcileWatched(list, watchedDates);
       listsReconciled.push(list.id);
     } catch (e: any) {
       logger.error(`Force-reconcile-watched: failed for list id=${list.id}: ${e?.message ?? e}`);

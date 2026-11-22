@@ -44,7 +44,7 @@ jest.mock('../util/logger', () => ({
 }));
 jest.mock('../watched', () => ({
   __esModule: true,
-  getDiaryWatchedDates: jest.fn(),
+  getWatchedDates: jest.fn(),
 }));
 
 import {
@@ -61,7 +61,7 @@ import {
 } from './index';
 import { getMovieById, getMovieByTmdbId, getAllTags, setMonitored, deleteMovie } from '../api/radarr';
 import { deleteCollection } from '../api/jellyfin';
-import { getDiaryWatchedDates } from '../watched';
+import { getWatchedDates } from '../watched';
 import { ListWithUser } from '../db/config';
 
 const now = new Date('2026-01-01T00:00:00Z');
@@ -80,6 +80,8 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
     defaultCheckIntervalMin: 60,
     dryRun: false,
     watchedRefreshIntervalMin: 1440,
+    newUserListAccess: 'approval',
+    newUserMaxListSize: 50,
     createdAt: now,
     updatedAt: now,
     ...overrides,
@@ -95,6 +97,9 @@ function makeList(overrides: Partial<List> = {}): ListWithUser {
     letterboxdUsername: null,
     jellyfinUserId: null,
     lastWatchedRefreshAt: null,
+    listAccess: 'auto',
+    qualityProfiles: '*',
+    maxListSize: null,
     createdAt: now,
     updatedAt: now,
   };
@@ -119,6 +124,7 @@ function makeList(overrides: Partial<List> = {}): ListWithUser {
     makeCollection: false,
     collectionNameOverride: null,
     jellyfinCollectionId: null,
+    approval: 'approved',
     lastSyncedAt: null,
     createdAt: now,
     updatedAt: now,
@@ -1037,7 +1043,7 @@ describe('convertToManaged', () => {
     (getMovieById as jest.Mock).mockResolvedValue({ id: 500, title: 'A Movie', tags: [] });
     (getAllTags as jest.Mock).mockResolvedValue([{ id: 1, label: 'chris' }]);
     (setMonitored as jest.Mock).mockResolvedValue(undefined);
-    (getDiaryWatchedDates as jest.Mock).mockResolvedValue(new Map());
+    (getWatchedDates as jest.Mock).mockResolvedValue(new Map());
   });
 
   it('throws if the movie does not exist', async () => {
@@ -1077,7 +1083,7 @@ describe('convertToManaged', () => {
 
     const result = await convertToManaged(1);
 
-    expect(getDiaryWatchedDates).not.toHaveBeenCalled();
+    expect(getWatchedDates).not.toHaveBeenCalled();
     expect(mockPrisma.deletionRequest.create).not.toHaveBeenCalled();
     expect(result).toEqual({ queued: false });
   });
@@ -1102,11 +1108,11 @@ describe('convertToManaged', () => {
     mockPrisma.listMovie.findMany
       .mockResolvedValueOnce([{ list: makeList({ removeOnWatch: true }) }]) // convertToManaged's own query
       .mockResolvedValueOnce([{ movieId: 1, firstSeenAt: before, movie: { tmdbId: 100, state: 'added' } }]); // reconcileWatched's own query
-    (getDiaryWatchedDates as jest.Mock).mockResolvedValue(new Map([[100, after]]));
+    (getWatchedDates as jest.Mock).mockResolvedValue(new Map([[100, after]]));
 
     const result = await convertToManaged(1);
 
-    expect(getDiaryWatchedDates).toHaveBeenCalledWith(1);
+    expect(getWatchedDates).toHaveBeenCalledWith(1);
     expect(mockPrisma.deletionRequest.create).toHaveBeenCalledWith({
       data: { movieId: 1, reason: 'watched', triggeredByListId: 10, status: 'pending' },
     });
@@ -1119,7 +1125,7 @@ describe('convertToManaged', () => {
     mockPrisma.listMovie.findMany
       .mockResolvedValueOnce([{ list: makeList({ removeOnWatch: true }) }])
       .mockResolvedValueOnce([{ movieId: 1, firstSeenAt: after, movie: { tmdbId: 100, state: 'added' } }]);
-    (getDiaryWatchedDates as jest.Mock).mockResolvedValue(new Map([[100, before]])); // watch predates the claim
+    (getWatchedDates as jest.Mock).mockResolvedValue(new Map([[100, before]])); // watch predates the claim
 
     const result = await convertToManaged(1);
 

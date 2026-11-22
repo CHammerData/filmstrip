@@ -30,7 +30,7 @@ jest.mock('../reconcile', () => ({
 jest.mock('../watched', () => ({
   __esModule: true,
   getOwnerWatchedTmdbIds: jest.fn(),
-  getDiaryWatchedDates: jest.fn(),
+  getWatchedDates: jest.fn(),
   refreshWatchedState: jest.fn(),
 }));
 jest.mock('../collections', () => ({ __esModule: true, syncCollection: jest.fn() }));
@@ -45,7 +45,7 @@ import { syncList, forceReconcileWatched } from './index';
 import { fetchMoviesFromUrl } from '../scraper';
 import { upsertMovies } from '../api/radarr';
 import { reconcileList, reconcileWatched, applyPermanenceClaims } from '../reconcile';
-import { getOwnerWatchedTmdbIds, getDiaryWatchedDates, refreshWatchedState } from '../watched';
+import { getOwnerWatchedTmdbIds, getWatchedDates, refreshWatchedState } from '../watched';
 import { syncCollection } from '../collections';
 import { ListWithUser } from '../db/config';
 
@@ -65,6 +65,8 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
     defaultCheckIntervalMin: 60,
     dryRun: false,
     watchedRefreshIntervalMin: 1440,
+    newUserListAccess: 'approval',
+    newUserMaxListSize: 50,
     createdAt: now,
     updatedAt: now,
     ...overrides,
@@ -80,6 +82,9 @@ function makeList(overrides: Partial<List> = {}): ListWithUser {
     letterboxdUsername: null,
     jellyfinUserId: null,
     lastWatchedRefreshAt: null,
+    listAccess: 'auto',
+    qualityProfiles: '*',
+    maxListSize: null,
     createdAt: now,
     updatedAt: now,
   };
@@ -104,6 +109,7 @@ function makeList(overrides: Partial<List> = {}): ListWithUser {
     makeCollection: false,
     collectionNameOverride: null,
     jellyfinCollectionId: null,
+    approval: 'approved',
     lastSyncedAt: null,
     createdAt: now,
     updatedAt: now,
@@ -140,7 +146,7 @@ describe('syncList', () => {
     (reconcileWatched as jest.Mock).mockResolvedValue(undefined);
     (applyPermanenceClaims as jest.Mock).mockResolvedValue(undefined);
     (getOwnerWatchedTmdbIds as jest.Mock).mockResolvedValue(new Set());
-    (getDiaryWatchedDates as jest.Mock).mockResolvedValue(new Map());
+    (getWatchedDates as jest.Mock).mockResolvedValue(new Map());
     (syncCollection as jest.Mock).mockResolvedValue(undefined);
   });
 
@@ -234,7 +240,7 @@ describe('syncList', () => {
     await syncList(makeList());
 
     expect(getOwnerWatchedTmdbIds).not.toHaveBeenCalled();
-    expect(getDiaryWatchedDates).not.toHaveBeenCalled();
+    expect(getWatchedDates).not.toHaveBeenCalled();
   });
 
   it('unwatchedOnly excludes already-watched movies from the add pipeline but not from reconcile', async () => {
@@ -259,7 +265,7 @@ describe('syncList', () => {
   it('removeOnWatch fetches diary watch dates and passes them to reconcileWatched', async () => {
     (fetchMoviesFromUrl as jest.Mock).mockResolvedValue([movieA]);
     const diaryDates = new Map([[1, new Date('2026-02-01')]]);
-    (getDiaryWatchedDates as jest.Mock).mockResolvedValue(diaryDates);
+    (getWatchedDates as jest.Mock).mockResolvedValue(diaryDates);
     (upsertMovies as jest.Mock).mockResolvedValue({
       added: 0,
       skipped: 1,
@@ -269,7 +275,7 @@ describe('syncList', () => {
 
     await syncList(makeList({ removeOnWatch: true }));
 
-    expect(getDiaryWatchedDates).toHaveBeenCalledWith(1);
+    expect(getWatchedDates).toHaveBeenCalledWith(1);
     expect(reconcileWatched).toHaveBeenCalledWith(expect.objectContaining({ id: 10 }), diaryDates);
   });
 
@@ -285,7 +291,7 @@ describe('syncList', () => {
     await syncList(makeList());
 
     expect(reconcileWatched).not.toHaveBeenCalled();
-    expect(getDiaryWatchedDates).not.toHaveBeenCalled();
+    expect(getWatchedDates).not.toHaveBeenCalled();
   });
 
   it('applies permanence claims when the list is permanence, after reconcile', async () => {
@@ -493,6 +499,9 @@ describe('forceReconcileWatched', () => {
     letterboxdUsername: 'chrisfilms',
     jellyfinUserId: null,
     lastWatchedRefreshAt: null,
+    listAccess: 'auto',
+    qualityProfiles: '*',
+    maxListSize: null,
     createdAt: now,
     updatedAt: now,
   };
@@ -504,7 +513,7 @@ describe('forceReconcileWatched', () => {
     mockPrisma.list.findMany.mockResolvedValue([]);
     mockPrisma.watchedFilm.count.mockResolvedValue(0);
     (refreshWatchedState as jest.Mock).mockResolvedValue(undefined);
-    (getDiaryWatchedDates as jest.Mock).mockResolvedValue(new Map());
+    (getWatchedDates as jest.Mock).mockResolvedValue(new Map());
     (reconcileWatched as jest.Mock).mockResolvedValue(undefined);
   });
 
@@ -527,7 +536,7 @@ describe('forceReconcileWatched', () => {
     const listB = makeList({ id: 11, removeOnWatch: true });
     mockPrisma.list.findMany.mockResolvedValue([listA, listB]);
     const diaryDates = new Map([[100, new Date('2026-01-01T00:00:00Z')]]);
-    (getDiaryWatchedDates as jest.Mock).mockResolvedValue(diaryDates);
+    (getWatchedDates as jest.Mock).mockResolvedValue(diaryDates);
     mockPrisma.watchedFilm.count.mockResolvedValue(7);
 
     const result = await forceReconcileWatched(1);

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { Prisma } from '@prisma/client';
 import prisma from '../../db/client';
 import { forceReconcileWatched } from '../../scheduler';
+import { LIST_ACCESS, newUserPolicy } from '../../db/policy';
 import { asyncHandler, parseBody, parseId, notFound, conflict } from '../http';
 import logger from '../../util/logger';
 
@@ -22,6 +23,11 @@ const createSchema = z
     enabled: z.boolean().optional(),
     letterboxdUsername: letterboxdUsername.nullable().optional(),
     jellyfinUserId: z.string().nullable().optional(),
+    // List policy (DESIGN.md §9a). qualityProfiles is comma-separated names, "*" for any, null for
+    // the Settings default only.
+    listAccess: z.enum(LIST_ACCESS).optional(),
+    qualityProfiles: z.string().trim().nullable().optional(),
+    maxListSize: z.number().int().positive().nullable().optional(),
   })
   .strict();
 
@@ -51,8 +57,10 @@ export function usersRouter(): Router {
     '/',
     asyncHandler(async (req, res) => {
       const data = parseBody(createSchema, req.body);
+      // Unset policy fields start from the new-user defaults, as a Jellyfin login would.
+      const settings = await prisma.settings.findUnique({ where: { id: 1 } });
       try {
-        const user = await prisma.user.create({ data });
+        const user = await prisma.user.create({ data: { ...newUserPolicy(settings, false), ...data } });
         res.status(201).json(user);
       } catch (e) {
         throw mapUserError(e, data.tag);
@@ -65,8 +73,17 @@ export function usersRouter(): Router {
     asyncHandler(async (req, res) => {
       const id = parseId(req.params.id);
       const data = parseBody(updateSchema, req.body);
+      // Same as /api/me: a changed Letterboxd account is re-baselined on its next refresh.
+      let rebaseline = false;
+      if (data.letterboxdUsername !== undefined) {
+        const existing = await prisma.user.findUnique({ where: { id }, select: { letterboxdUsername: true } });
+        rebaseline = !!existing && existing.letterboxdUsername !== data.letterboxdUsername;
+      }
       try {
-        const user = await prisma.user.update({ where: { id }, data });
+        const user = await prisma.user.update({
+          where: { id },
+          data: { ...data, ...(rebaseline ? { lastWatchedRefreshAt: null } : {}) },
+        });
         res.json(user);
       } catch (e) {
         if (isNotFound(e)) throw notFound(`User id=${id} not found.`);

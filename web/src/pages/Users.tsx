@@ -1,6 +1,37 @@
 import { Fragment, FormEvent, useState } from 'react';
-import { get, post, patch, del, ApiError, User, JellyfinCandidates, RefreshWatchedStarted } from '../api';
+import {
+  get,
+  post,
+  patch,
+  del,
+  ApiError,
+  User,
+  JellyfinCandidates,
+  RefreshWatchedStarted,
+  RadarrOptions,
+  ListAccess,
+} from '../api';
 import { useLoad } from '../useLoad';
+
+const ACCESS_LABEL: Record<ListAccess, string> = {
+  none: 'No lists',
+  approval: 'Lists need approval',
+  auto: 'Lists sync straight away',
+};
+
+const ACCESS_SHORT: Record<ListAccess, string> = { none: 'none', approval: 'approval', auto: 'auto' };
+
+/** Compact summary of a user's list policy for the table (DESIGN.md §9a); the title has it in full. */
+function policySummary(u: User): { short: string; full: string } {
+  if (u.listAccess === 'none') return { short: 'none', full: ACCESS_LABEL.none };
+  const size = u.maxListSize ? `≤${u.maxListSize}` : 'any size';
+  const profiles =
+    u.qualityProfiles === '*' ? 'any profile' : u.qualityProfiles ? `default + ${u.qualityProfiles}` : 'default profile';
+  return {
+    short: `${ACCESS_SHORT[u.listAccess]} · ${size}`,
+    full: `${ACCESS_LABEL[u.listAccess]} · ${u.maxListSize ? `at most ${u.maxListSize} films` : 'no size cap'} · ${profiles}`,
+  };
+}
 
 /** Turn a display name into a Radarr-safe tag suggestion (mirrors the server's deriveUniqueTag). */
 function slugifyTag(name: string): string {
@@ -71,6 +102,7 @@ export default function Users() {
                 <th>Letterboxd</th>
                 <th>Jellyfin id</th>
                 <th>Watched refreshed</th>
+                <th>Lists</th>
                 <th>Enabled</th>
                 <th></th>
               </tr>
@@ -86,6 +118,9 @@ export default function Users() {
                     {/* The refresh runs detached, so this is how you see it actually finish. */}
                     <td className="muted">
                       {u.lastWatchedRefreshAt ? new Date(u.lastWatchedRefreshAt).toLocaleString() : 'never'}
+                    </td>
+                    <td className="muted" title={policySummary(u).full} style={{ whiteSpace: 'nowrap' }}>
+                      {policySummary(u).short}
                     </td>
                     <td>{u.enabled ? 'yes' : 'no'}</td>
                     <td>
@@ -113,7 +148,7 @@ export default function Users() {
                   </tr>
                   {editing === u.id && (
                     <tr>
-                      <td colSpan={7}>
+                      <td colSpan={8}>
                         <EditUser
                           user={u}
                           onSaved={() => {
@@ -260,7 +295,19 @@ function AddUser({ onAdded }: { onAdded: () => void }) {
 }
 
 function EditUser({ user, onSaved }: { user: User; onSaved: () => void }) {
+  const radarr = useLoad<RadarrOptions>(() => get('/radarr/options'));
   const [form, setForm] = useState(user);
+  const anyProfile = form.qualityProfiles === '*';
+  const picked = new Set(
+    anyProfile ? [] : (form.qualityProfiles ?? '').split(',').map((p) => p.trim()).filter(Boolean)
+  );
+
+  function toggleProfile(name: string, on: boolean) {
+    const next = new Set(picked);
+    if (on) next.add(name);
+    else next.delete(name);
+    setForm({ ...form, qualityProfiles: next.size ? [...next].join(',') : null });
+  }
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -274,6 +321,9 @@ function EditUser({ user, onSaved }: { user: User; onSaved: () => void }) {
         enabled: form.enabled,
         letterboxdUsername: form.letterboxdUsername || null,
         jellyfinUserId: form.jellyfinUserId || null,
+        listAccess: form.listAccess,
+        qualityProfiles: form.qualityProfiles,
+        maxListSize: form.maxListSize,
       });
       onSaved();
     } catch (e) {
@@ -310,6 +360,69 @@ function EditUser({ user, onSaved }: { user: User; onSaved: () => void }) {
           />
         </label>
       </div>
+      <h3 style={{ marginTop: 16 }}>Letterboxd lists</h3>
+      <p className="muted" style={{ fontSize: 12 }}>
+        What this user can do with their own lists. An admin account isn’t limited by any of this.
+      </p>
+      <div className="row">
+        <label>
+          <span>Adding lists</span>
+          <select
+            value={form.listAccess}
+            onChange={(e) => setForm({ ...form, listAccess: e.target.value as ListAccess })}
+          >
+            <option value="auto">{ACCESS_LABEL.auto}</option>
+            <option value="approval">{ACCESS_LABEL.approval}</option>
+            <option value="none">{ACCESS_LABEL.none} (existing lists stop syncing)</option>
+          </select>
+        </label>
+        <label>
+          <span>Max films per list</span>
+          <input
+            type="number"
+            min={1}
+            value={form.maxListSize ?? ''}
+            placeholder="no cap"
+            onChange={(e) => setForm({ ...form, maxListSize: e.target.value ? Number(e.target.value) : null })}
+          />
+        </label>
+      </div>
+      <fieldset style={{ border: 'none', padding: 0, margin: '8px 0' }}>
+        <span>Quality profiles they can choose (the default is always allowed)</span>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginTop: 6 }}>
+          <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <input
+              type="checkbox"
+              checked={anyProfile}
+              onChange={(e) => setForm({ ...form, qualityProfiles: e.target.checked ? '*' : null })}
+              style={{ width: 'auto' }}
+            />
+            <span style={{ margin: 0 }}>Any</span>
+          </label>
+          {!anyProfile && !radarr.data?.configured && (
+            <input
+              value={form.qualityProfiles ?? ''}
+              onChange={(e) => setForm({ ...form, qualityProfiles: e.target.value || null })}
+              placeholder="Radarr isn’t reachable: comma-separated profile names"
+              style={{ flex: 1, minWidth: 240 }}
+            />
+          )}
+          {!anyProfile &&
+            radarr.data?.configured &&
+            radarr.data.qualityProfiles.map((p) => (
+              <label key={p.id} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <input
+                  type="checkbox"
+                  checked={picked.has(p.name)}
+                  onChange={(e) => toggleProfile(p.name, e.target.checked)}
+                  style={{ width: 'auto' }}
+                />
+                <span style={{ margin: 0 }}>{p.name}</span>
+              </label>
+            ))}
+        </div>
+      </fieldset>
+
       <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
         <input
           type="checkbox"

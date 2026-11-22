@@ -1,4 +1,6 @@
 import { List, Settings, User } from '@prisma/client';
+import { effectiveTake, isQualityProfileAllowed } from './policy';
+import logger from '../util/logger';
 
 /** Tag applied to every movie this tool adds, regardless of user/list. */
 export const GLOBAL_TAG = 'letterboxd';
@@ -66,7 +68,18 @@ export function resolveListConfig(list: ListWithUser, settings: Settings): Effec
     );
   }
 
-  const qualityProfile = list.qualityProfile ?? settings.defaultQualityProfile;
+  // The owner's policy (DESIGN.md §9a) is re-checked here, not just when the list was saved, so
+  // narrowing a user's allowed profiles reaches lists they already have: an override they may no
+  // longer use falls back to the Settings default.
+  let listProfile = list.qualityProfile;
+  if (listProfile && !isQualityProfileAllowed(list.user, listProfile, settings)) {
+    logger.warn(
+      `List "${list.label}" (id=${list.id}) asks for quality profile "${listProfile}", which its owner ` +
+        'may not use; using the Settings default instead.'
+    );
+    listProfile = null;
+  }
+  const qualityProfile = listProfile ?? settings.defaultQualityProfile;
   if (!qualityProfile) {
     throw new Error(
       `No quality profile for list "${list.label}" (id=${list.id}) and no Settings default. ` +
@@ -88,7 +101,7 @@ export function resolveListConfig(list: ListWithUser, settings: Settings): Effec
     label: list.label,
     listType: list.listType,
 
-    take: list.takeAmount ?? undefined,
+    take: effectiveTake(list.user, list.takeAmount),
     strategy,
 
     radarrUrl,

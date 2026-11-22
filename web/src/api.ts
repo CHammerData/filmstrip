@@ -45,7 +45,14 @@ export interface User {
   letterboxdUsername: string | null;
   jellyfinUserId: string | null;
   lastWatchedRefreshAt: string | null;
+  // List policy (DESIGN.md §9a): qualityProfiles is comma-separated names, "*" any, null default only.
+  listAccess: ListAccess;
+  qualityProfiles: string | null;
+  maxListSize: number | null;
 }
+
+export type ListAccess = 'none' | 'approval' | 'auto';
+export type ListApproval = 'pending' | 'approved' | 'rejected';
 
 export interface List {
   id: number;
@@ -54,6 +61,7 @@ export interface List {
   listType: string;
   label: string;
   enabled: boolean;
+  approval: ListApproval;
   qualityProfile: string | null;
   rootFolderId: string | null;
   minimumAvailability: string | null;
@@ -97,6 +105,8 @@ export interface Settings {
   defaultMinimumAvailability: string;
   defaultCheckIntervalMin: number;
   dryRun: boolean;
+  newUserListAccess: ListAccess;
+  newUserMaxListSize: number | null;
 }
 
 export interface Movie {

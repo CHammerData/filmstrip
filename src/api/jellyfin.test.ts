@@ -20,6 +20,7 @@ import Axios from 'axios';
 import {
   createJellyfinClient,
   getWatchedTmdbIds,
+  getWatchedMovies,
   getAllMovieProviderIds,
   findCollectionByName,
   getCollectionById,
@@ -155,6 +156,36 @@ describe('jellyfin API', () => {
       const result = await getWatchedTmdbIds(client, 'user-1');
 
       expect(result).toEqual(new Set());
+    });
+  });
+
+  describe('getWatchedMovies', () => {
+    it('returns played movies with their last-played date', async () => {
+      mockAxiosInstance.get.mockResolvedValueOnce({
+        data: {
+          Items: [
+            { Id: 'a', Name: 'A', ProviderIds: { Tmdb: '100' }, UserData: { LastPlayedDate: '2026-11-20T21:14:00Z' } },
+            { Id: 'b', Name: 'B', ProviderIds: { Tmdb: '200' }, UserData: {} },
+            { Id: 'c', Name: 'C', ProviderIds: {} },
+          ],
+        },
+      });
+
+      const result = await getWatchedMovies(client, 'user-1');
+
+      expect(result).toEqual([
+        { tmdbId: 100, lastPlayedAt: new Date('2026-11-20T21:14:00Z') },
+        { tmdbId: 200, lastPlayedAt: null },
+      ]);
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith(
+        '/Users/user-1/Items',
+        expect.objectContaining({ params: expect.objectContaining({ EnableUserData: true }) })
+      );
+    });
+
+    it('returns null, not an empty list, on error', async () => {
+      mockAxiosInstance.get.mockRejectedValueOnce(new Error('network error'));
+      expect(await getWatchedMovies(client, 'user-1')).toBeNull();
     });
   });
 

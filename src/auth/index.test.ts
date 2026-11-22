@@ -76,7 +76,14 @@ describe('login', () => {
     const result = await login('sam', 'pw');
 
     expect(mockPrisma.user.create).toHaveBeenCalledWith({
-      data: { name: 'Sam Smith', jellyfinUserId: 'jf-2', tag: 'sam-smith' },
+      data: {
+        name: 'Sam Smith',
+        jellyfinUserId: 'jf-2',
+        tag: 'sam-smith',
+        listAccess: 'approval',
+        qualityProfiles: null,
+        maxListSize: null,
+      },
     });
     expect(result.user.id).toBe(6);
     expect(result.isAdmin).toBe(false);

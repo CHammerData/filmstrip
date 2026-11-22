@@ -9,7 +9,7 @@ import {
   deleteMovie,
 } from '../api/radarr';
 import { createJellyfinClient, deleteCollection } from '../api/jellyfin';
-import { getDiaryWatchedDates } from '../watched';
+import { getWatchedDates } from '../watched';
 import { transitionMovie, logMovieEvent } from '../movieState';
 import logger from '../util/logger';
 
@@ -326,24 +326,24 @@ export async function reconcileList(list: ListWithUser, currentTmdbIds: Set<numb
 
 /**
  * removeOnWatch (DESIGN.md §6-§7): for a list with that toggle on, queue for deletion review any
- * film still claimed by this list whose *diary-logged* watch date is real and postdates this
- * list's own firstSeenAt for it (a presence-only aggregate/Jellyfin watch, or a diary date that
- * predates this list tracking the film, can't be told "just watched" from "watched years ago" --
- * DESIGN.md §7) -- unless another enabled, non-removeOnWatch list still ordinarily claims it (that
+ * film still claimed by this list whose dated watch (a diary entry, a Jellyfin play, or a
+ * Letterboxd watch first noticed by a refresh -- see `refreshWatchedState`) postdates this list's
+ * own firstSeenAt for it (an undated watch, or one that predates this list tracking the film,
+ * can't be told "just watched" from "watched years ago" -- DESIGN.md §7) -- unless another enabled, non-removeOnWatch list still ordinarily claims it (that
  * list's claim takes precedence over this one's watch-triggered drop). Unlike reconcileList, this
  * doesn't require the film to have left the list — being watched is its own independent trigger.
  * Logs a `watch_dropped` history event for every film this list drops on watch, regardless of
  * whether the aggregate keeper-rule ends up queuing it (DESIGN.md §5).
  *
- * The diary only carries a calendar day (midnight UTC, see `DiaryScraper`), while firstSeenAt is a
+ * A diary entry only carries a calendar day (midnight UTC, see `DiaryScraper`), while firstSeenAt is a
  * real timestamp -- comparing them directly made a same-day watch (added and diary-logged the same
  * day, the common case for a film that gets watched right after it downloads) almost always read as
  * "predates firstSeenAt" purely because midnight is earlier than whatever time of day the film was
  * added. Truncating firstSeenAt to its own UTC day before comparing fixes that while still excluding
  * a diary date from a genuinely earlier day.
  */
-export async function reconcileWatched(list: ListWithUser, diaryWatchedDates: Map<number, Date>): Promise<void> {
-  if (diaryWatchedDates.size === 0) return;
+export async function reconcileWatched(list: ListWithUser, watchedDates: Map<number, Date>): Promise<void> {
+  if (watchedDates.size === 0) return;
 
   const current = await prisma.listMovie.findMany({
     where: { listId: list.id, ...LIVE_CLAIM_WHERE },
@@ -357,7 +357,7 @@ export async function reconcileWatched(list: ListWithUser, diaryWatchedDates: Ma
     // produce once evaluateForDeletion's own gate started silently no-opping underneath it.
     if (lm.movie.state !== 'added') continue;
 
-    const watchedAt = diaryWatchedDates.get(lm.movie.tmdbId);
+    const watchedAt = watchedDates.get(lm.movie.tmdbId);
     if (!watchedAt) continue;
     const firstSeenDay = Date.UTC(
       lm.firstSeenAt.getUTCFullYear(),
@@ -702,8 +702,8 @@ export async function convertToManaged(movieId: number): Promise<{ queued: boole
       if (checkedListIds.has(lm.list.id)) continue;
       checkedListIds.add(lm.list.id);
       try {
-        const diaryWatchedDates = await getDiaryWatchedDates(lm.list.userId);
-        await reconcileWatched(lm.list, diaryWatchedDates);
+        const watchedDates = await getWatchedDates(lm.list.userId);
+        await reconcileWatched(lm.list, watchedDates);
       } catch (e: any) {
         logger.error(
           `Convert-to-managed: failed checking removeOnWatch list id=${lm.list.id} for movie id=${movieId}: ${e?.message ?? e}`

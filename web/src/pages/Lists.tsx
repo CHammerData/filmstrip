@@ -7,6 +7,7 @@ import {
   ListSettingsForm,
   EMPTY_LIST_SETTINGS,
   settingsPayload,
+  listLimitsFor,
 } from '../listFields';
 import { LetterboxdPrompt } from '../LetterboxdPrompt';
 
@@ -26,6 +27,7 @@ export default function Lists() {
 
   // Mirrors the backend rule: you can edit/sync a list if you own it, or if you're an admin.
   const canManage = (l: List) => !!me && (me.isAdmin || l.userId === me.user.id);
+  const pending = lists.data?.filter((l) => l.approval === 'pending').length ?? 0;
 
   async function syncNow(id: number) {
     setNotice(null);
@@ -36,6 +38,18 @@ export default function Lists() {
       lists.reload();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'Sync failed.');
+    }
+  }
+
+  // Admin: approve or reject a list waiting on approval (DESIGN.md §9a).
+  async function review(id: number, action: 'approve' | 'reject') {
+    setNotice(null);
+    setError(null);
+    try {
+      await post(`/lists/${id}/${action}`);
+      lists.reload();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : `Could not ${action} the list.`);
     }
   }
 
@@ -55,8 +69,18 @@ export default function Lists() {
       {notice && <div className="panel" style={{ borderColor: 'var(--ok)' }}>{notice}</div>}
       {error && <div className="error">{error}</div>}
 
-      {me && (
-        <AddList me={me} users={users.data ?? []} radarrOptions={radarr.data ?? null} onAdded={lists.reload} />
+      {me?.isAdmin && pending > 0 && (
+        <div className="panel" style={{ borderColor: 'var(--accent)' }}>
+          {pending === 1 ? '1 list is' : `${pending} lists are`} waiting for your approval.
+        </div>
+      )}
+
+      {me && !me.isAdmin && me.user.listAccess === 'none' ? (
+        <p className="muted">You can’t add lists. Ask the server admin if you’d like to.</p>
+      ) : (
+        me && (
+          <AddList me={me} users={users.data ?? []} radarrOptions={radarr.data ?? null} onAdded={lists.reload} />
+        )
       )}
 
       {lists.loading && <p className="muted">Loading…</p>}
@@ -71,7 +95,7 @@ export default function Lists() {
                 <th>Label</th>
                 <th>Type</th>
                 <th>Owner</th>
-                <th>Enabled</th>
+                <th>Status</th>
                 <th>Last synced</th>
                 <th></th>
               </tr>
@@ -88,11 +112,21 @@ export default function Lists() {
                     </td>
                     <td>{l.listType}</td>
                     <td>{l.user?.name ?? l.userId}</td>
-                    <td>{l.enabled ? 'yes' : 'no'}</td>
+                    <td>
+                      <ListStatus list={l} />
+                    </td>
                     <td className="muted">{l.lastSyncedAt ? new Date(l.lastSyncedAt).toLocaleString() : 'never'}</td>
                     <td>
                       <div className="actions">
-                        {canManage(l) && (
+                        {me?.isAdmin && l.approval !== 'approved' && (
+                          <button onClick={() => review(l.id, 'approve')}>Approve</button>
+                        )}
+                        {me?.isAdmin && l.approval === 'pending' && (
+                          <button className="danger" onClick={() => review(l.id, 'reject')}>
+                            Reject
+                          </button>
+                        )}
+                        {canManage(l) && l.approval === 'approved' && (
                           <button className="secondary" onClick={() => syncNow(l.id)}>
                             Sync
                           </button>
@@ -116,6 +150,7 @@ export default function Lists() {
                         <EditList
                           list={l}
                           radarrOptions={radarr.data ?? null}
+                          me={me}
                           onSaved={() => {
                             setEditing(null);
                             lists.reload();
@@ -132,6 +167,13 @@ export default function Lists() {
       )}
     </div>
   );
+}
+
+/** Approval first (a pending/rejected list never syncs, enabled or not), then enabled. */
+function ListStatus({ list }: { list: List }) {
+  if (list.approval === 'pending') return <span style={{ color: 'var(--accent)' }}>awaiting approval</span>;
+  if (list.approval === 'rejected') return <span style={{ color: 'var(--danger)' }}>rejected</span>;
+  return <>{list.enabled ? 'enabled' : 'disabled'}</>;
 }
 
 function AddList({
@@ -236,6 +278,12 @@ function AddList({
         {advanced ? '▾ Advanced settings' : '▸ Advanced settings'}
       </button>
 
+      {!isAdmin && me.user.listAccess === 'approval' && (
+        <p className="muted" style={{ fontSize: 12 }}>
+          New lists wait for the admin’s approval before they start adding films.
+        </p>
+      )}
+
       {advanced && (
         <div style={{ marginTop: 12 }}>
           {radarrOptions && !radarrOptions.configured && (
@@ -244,7 +292,7 @@ function AddList({
               dropdowns.
             </p>
           )}
-          <ListSettingsFields form={form} set={set} radarrOptions={radarrOptions} />
+          <ListSettingsFields form={form} set={set} radarrOptions={radarrOptions} limits={listLimitsFor(me)} />
         </div>
       )}
 
@@ -265,10 +313,12 @@ function AddList({
 function EditList({
   list,
   radarrOptions,
+  me,
   onSaved,
 }: {
   list: List;
   radarrOptions: RadarrOptions | null;
+  me: Me | null;
   onSaved: () => void;
 }) {
   const [form, setForm] = useState<ListSettingsForm>(list);
@@ -311,7 +361,7 @@ function EditList({
           dropdowns.
         </p>
       )}
-      <ListSettingsFields form={form} set={set} radarrOptions={radarrOptions} />
+      <ListSettingsFields form={form} set={set} radarrOptions={radarrOptions} limits={listLimitsFor(me)} />
       <button onClick={save} disabled={busy} style={{ marginTop: 12 }}>
         {busy ? 'Saving…' : 'Save'}
       </button>

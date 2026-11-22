@@ -16,6 +16,7 @@ jest.mock('../api/jellyfin', () => ({
   __esModule: true,
   createJellyfinClient: jest.fn(() => ({})),
   getWatchedTmdbIds: jest.fn(),
+  getWatchedMovies: jest.fn(),
 }));
 jest.mock('../util/logger', () => ({
   debug: jest.fn(),
@@ -24,10 +25,16 @@ jest.mock('../util/logger', () => ({
   error: jest.fn(),
 }));
 
-import { getOwnerWatchedTmdbIds, refreshWatchedState, refreshDueUsers, getDiaryWatchedDates } from './index';
+import {
+  getOwnerWatchedTmdbIds,
+  refreshWatchedState,
+  refreshDueUsers,
+  getWatchedDates,
+  NEW_WATCH_BURST_LIMIT,
+} from './index';
 import { fetchMoviesFromUrl } from '../scraper';
 import { DiaryScraper } from '../scraper/diary';
-import { getWatchedTmdbIds } from '../api/jellyfin';
+import { getWatchedTmdbIds, getWatchedMovies } from '../api/jellyfin';
 
 /** Configure the mocked DiaryScraper's next getEntries() call. */
 function mockDiaryEntries(entries: { tmdbId: string; watchedAt: Date }[]) {
@@ -47,6 +54,9 @@ function makeUser(overrides: Partial<User> = {}): User {
     letterboxdUsername: null,
     jellyfinUserId: null,
     lastWatchedRefreshAt: null,
+    listAccess: 'auto',
+    qualityProfiles: '*',
+    maxListSize: null,
     createdAt: now,
     updatedAt: now,
     ...overrides,
@@ -67,6 +77,8 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
     defaultCheckIntervalMin: 60,
     dryRun: false,
     watchedRefreshIntervalMin: 1440,
+    newUserListAccess: 'approval',
+    newUserMaxListSize: 50,
     createdAt: now,
     updatedAt: now,
     ...overrides,
@@ -145,20 +157,20 @@ describe('getOwnerWatchedTmdbIds', () => {
   });
 });
 
-describe('getDiaryWatchedDates', () => {
+describe('getWatchedDates', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  it('returns a map of tmdbId to watchedAt for letterboxd_diary rows', async () => {
+  it('returns a map of tmdbId to watchedAt for every dated row, whatever its source', async () => {
     mockPrisma.watchedFilm.findMany.mockResolvedValue([
       { tmdbId: 100, watchedAt: new Date('2026-07-15T00:00:00Z') },
     ]);
 
-    const result = await getDiaryWatchedDates(1);
+    const result = await getWatchedDates(1);
 
     expect(mockPrisma.watchedFilm.findMany).toHaveBeenCalledWith({
-      where: { userId: 1, source: 'letterboxd_diary', watchedAt: { not: null } },
+      where: { userId: 1, watchedAt: { not: null } },
       select: { tmdbId: true, watchedAt: true },
     });
     expect(result).toEqual(new Map([[100, new Date('2026-07-15T00:00:00Z')]]));
@@ -167,7 +179,7 @@ describe('getDiaryWatchedDates', () => {
   it('returns an empty map when there are no diary rows', async () => {
     mockPrisma.watchedFilm.findMany.mockResolvedValue([]);
 
-    const result = await getDiaryWatchedDates(1);
+    const result = await getWatchedDates(1);
 
     expect(result.size).toBe(0);
   });
@@ -178,7 +190,8 @@ describe('refreshWatchedState', () => {
     jest.clearAllMocks();
     mockDiaryEntries([]);
     (fetchMoviesFromUrl as jest.Mock).mockResolvedValue([]);
-    (getWatchedTmdbIds as jest.Mock).mockResolvedValue(new Set());
+    (getWatchedMovies as jest.Mock).mockResolvedValue([]);
+    mockPrisma.watchedFilm.findMany.mockResolvedValue([]);
     mockPrisma.watchedFilm.upsert.mockResolvedValue({});
     mockPrisma.user.update.mockResolvedValue({});
   });
@@ -227,8 +240,10 @@ describe('refreshWatchedState', () => {
     });
   });
 
-  it('upserts a Jellyfin-only watched film with a null date and source jellyfin', async () => {
-    (getWatchedTmdbIds as jest.Mock).mockResolvedValue(new Set([200]));
+  it('upserts a Jellyfin play with its last-played date and source jellyfin', async () => {
+    (getWatchedMovies as jest.Mock).mockResolvedValue([
+      { tmdbId: 200, lastPlayedAt: new Date('2026-11-20T21:14:00Z') },
+    ]);
 
     await refreshWatchedState(
       makeUser({ jellyfinUserId: 'user-1' }),
@@ -237,9 +252,84 @@ describe('refreshWatchedState', () => {
 
     expect(mockPrisma.watchedFilm.upsert).toHaveBeenCalledWith({
       where: { userId_tmdbId: { userId: 1, tmdbId: 200 } },
-      update: { watchedAt: null, source: 'jellyfin' },
-      create: { userId: 1, tmdbId: 200, watchedAt: null, source: 'jellyfin' },
+      update: { watchedAt: new Date('2026-11-20T21:14:00Z'), source: 'jellyfin' },
+      create: { userId: 1, tmdbId: 200, watchedAt: new Date('2026-11-20T21:14:00Z'), source: 'jellyfin' },
     });
+  });
+
+  it('keeps the later of a diary date and a Jellyfin play for the same film', async () => {
+    mockDiaryEntries([{ tmdbId: '100', watchedAt: new Date('2026-07-15T00:00:00Z') }]);
+    (getWatchedMovies as jest.Mock).mockResolvedValue([
+      { tmdbId: 100, lastPlayedAt: new Date('2026-11-20T21:14:00Z') },
+    ]);
+
+    await refreshWatchedState(
+      makeUser({ letterboxdUsername: 'chris', jellyfinUserId: 'user-1' }),
+      makeSettings({ jellyfinUrl: 'http://jellyfin:8096', jellyfinApiKey: 'key' })
+    );
+
+    expect(mockPrisma.watchedFilm.upsert).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.watchedFilm.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ update: { watchedAt: new Date('2026-11-20T21:14:00Z'), source: 'jellyfin' } })
+    );
+  });
+
+  it('dates a film newly marked watched on Letterboxd with the refresh time', async () => {
+    (fetchMoviesFromUrl as jest.Mock).mockResolvedValue([{ id: 1, name: 'A', slug: '/film/a/', tmdbId: '100' }]);
+    const before = Date.now();
+
+    await refreshWatchedState(
+      makeUser({ letterboxdUsername: 'chris', lastWatchedRefreshAt: new Date('2026-11-21T00:00:00Z') }),
+      makeSettings()
+    );
+
+    const { update } = mockPrisma.watchedFilm.upsert.mock.calls[0][0];
+    expect(update.source).toBe('letterboxd_aggregate');
+    expect(update.watchedAt.getTime()).toBeGreaterThanOrEqual(before);
+  });
+
+  it('does not date anything on a first refresh: that is history, not new watches', async () => {
+    (fetchMoviesFromUrl as jest.Mock).mockResolvedValue([{ id: 1, name: 'A', slug: '/film/a/', tmdbId: '100' }]);
+
+    await refreshWatchedState(makeUser({ letterboxdUsername: 'chris', lastWatchedRefreshAt: null }), makeSettings());
+
+    expect(mockPrisma.watchedFilm.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ update: { watchedAt: null, source: 'letterboxd_aggregate' } })
+    );
+  });
+
+  it('does not date a burst of newly seen watches (a scrape catching up)', async () => {
+    (fetchMoviesFromUrl as jest.Mock).mockResolvedValue(
+      Array.from({ length: NEW_WATCH_BURST_LIMIT + 1 }, (_, i) => ({
+        id: i,
+        name: `F${i}`,
+        slug: `/film/f${i}/`,
+        tmdbId: String(1000 + i),
+      }))
+    );
+
+    await refreshWatchedState(
+      makeUser({ letterboxdUsername: 'chris', lastWatchedRefreshAt: new Date('2026-11-21T00:00:00Z') }),
+      makeSettings()
+    );
+
+    expect(mockPrisma.watchedFilm.upsert).toHaveBeenCalledTimes(NEW_WATCH_BURST_LIMIT + 1);
+    for (const [call] of mockPrisma.watchedFilm.upsert.mock.calls) expect(call.update.watchedAt).toBeNull();
+  });
+
+  it('leaves a film it already knew about alone, keeping its cached date', async () => {
+    const seen = new Date('2026-11-10T08:00:00Z');
+    mockPrisma.watchedFilm.findMany.mockResolvedValue([
+      { tmdbId: 100, watchedAt: seen, source: 'letterboxd_aggregate' },
+    ]);
+    (fetchMoviesFromUrl as jest.Mock).mockResolvedValue([{ id: 1, name: 'A', slug: '/film/a/', tmdbId: '100' }]);
+
+    await refreshWatchedState(
+      makeUser({ letterboxdUsername: 'chris', lastWatchedRefreshAt: new Date('2026-11-21T00:00:00Z') }),
+      makeSettings()
+    );
+
+    expect(mockPrisma.watchedFilm.upsert).not.toHaveBeenCalled();
   });
 
   it('lets a diary date upgrade a presence-only record for the same film', async () => {
@@ -283,7 +373,8 @@ describe('refreshDueUsers', () => {
     jest.clearAllMocks();
     mockDiaryEntries([]);
     (fetchMoviesFromUrl as jest.Mock).mockResolvedValue([]);
-    (getWatchedTmdbIds as jest.Mock).mockResolvedValue(new Set());
+    (getWatchedMovies as jest.Mock).mockResolvedValue([]);
+    mockPrisma.watchedFilm.findMany.mockResolvedValue([]);
     mockPrisma.watchedFilm.upsert.mockResolvedValue({});
     mockPrisma.user.update.mockResolvedValue({});
     mockPrisma.settings.findUnique.mockResolvedValue(makeSettings({ watchedRefreshIntervalMin: 60 }));

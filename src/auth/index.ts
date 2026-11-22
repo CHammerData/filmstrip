@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { Session, User } from '@prisma/client';
 import prisma from '../db/client';
+import { newUserPolicy } from '../db/policy';
 import { authenticateByName } from '../api/jellyfin';
 import { JellyfinAuthError } from '../api/jellyfin.errors';
 import { isHttpUrl } from '../util/url';
@@ -48,7 +49,7 @@ export async function login(username: string, password: string): Promise<AuthRes
   }
 
   const identity = await authenticateByName(jellyfinUrl, username, password);
-  const user = await findOrCreateUser(identity.jellyfinUserId, identity.name);
+  const user = await findOrCreateUser(identity.jellyfinUserId, identity.name, identity.isAdmin);
 
   const token = crypto.randomBytes(32).toString('hex');
   await prisma.session.create({
@@ -86,13 +87,16 @@ export async function logout(token: string): Promise<void> {
   await prisma.session.deleteMany({ where: { token } });
 }
 
-/** Find the Filmstrip User linked to this Jellyfin id, or auto-provision one. */
-async function findOrCreateUser(jellyfinUserId: string, name: string): Promise<User> {
+/** Find the Filmstrip User linked to this Jellyfin id, or auto-provision one. A new user's list
+ *  policy comes from the Settings.newUser* defaults (DESIGN.md §9a); a Jellyfin admin gets no
+ *  limits, matching what their admin session can do anyway. */
+async function findOrCreateUser(jellyfinUserId: string, name: string, isAdmin: boolean): Promise<User> {
   const existing = await prisma.user.findUnique({ where: { jellyfinUserId } });
   if (existing) return existing;
 
   const tag = await deriveUniqueTag(name);
-  return prisma.user.create({ data: { name, jellyfinUserId, tag } });
+  const settings = await prisma.settings.findUnique({ where: { id: 1 } });
+  return prisma.user.create({ data: { name, jellyfinUserId, tag, ...newUserPolicy(settings, isAdmin) } });
 }
 
 /** Turn a display name into a Radarr-safe, unique tag (e.g. "Chris H." -> "chris-h"). */
